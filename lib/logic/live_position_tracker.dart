@@ -30,24 +30,32 @@ class LivePosition {
 /// construction, since the reported position is always a point on the
 /// recorded path itself (see the AR floor-detection/anchoring research).
 ///
-/// Step-length/motion-threshold constants mirror mapping_screen.dart, and
-/// step *direction* (forward vs. backward) compares the live compass heading
-/// against the route's own stored segment heading at the walker's current
-/// position, so turns are handled by the route geometry, not by trusting
-/// absolute heading to stay accurate over a long walk.
+/// Step length/motion-magnitude threshold mirror mapping_screen.dart, but
+/// unlike mapping (a deliberate, closely-watched recording process), the
+/// trigger itself requires a sustained walking rhythm rather than a single
+/// motion spike, so an incidental jerk while navigating doesn't move the
+/// tracked position (see _consecutivePeaks below). Step *direction* (forward
+/// vs. backward) compares the live compass heading against the route's own
+/// stored segment heading at the walker's current position, so turns are
+/// handled by the route geometry, not by trusting absolute heading to stay
+/// accurate over a long walk.
 class LivePositionTracker {
   static const _poseChannel = EventChannel('mapx/arcore_pose');
 
   static const double stepLengthMeters = 0.5;
   static const double stepMotionThreshold = 0.4;
-  static const double stepCooldownSeconds = 0.7;
 
-  // TEMPORARY: step-triggered position advancement is disabled so the AR
-  // line's heading/rendering stability can be assessed on its own, without
-  // incidental phone jerks while panning to look around being misread as
-  // footsteps. Position stays fixed at the start of the route until this is
-  // switched back on. Re-enable once the line itself is solid.
-  static const bool _stepDetectionEnabled = false;
+  // A genuine footstep is followed by another one at a fairly steady
+  // cadence, over and over; an isolated jerk (adjusting grip, a bump,
+  // gesturing while looking around) is a one-off spike with nothing
+  // resembling it nearby. So a single motion spike is never enough on its
+  // own - it only becomes a step once it's the *second* spike in a row
+  // spaced at a plausible walking cadence. An isolated jerk never gets that
+  // second, similarly-timed spike, so it's filtered out for free.
+  static const double _minStepIntervalSeconds = 0.3;
+  static const double _maxStepIntervalSeconds = 1.2;
+
+  static const bool _stepDetectionEnabled = true;
 
   final List<PathNode> route;
   late final List<double> _distances;
@@ -58,7 +66,8 @@ class LivePositionTracker {
 
   StreamSubscription? _sub;
   double _progress;
-  double _lastStepTime = 0;
+  double _lastPeakTime = 0;
+  int _consecutivePeaks = 0;
 
   // Smoothed separately from the raw heading used for step math: the AR
   // overlay projects points in real 3D, where perspective math amplifies
@@ -134,14 +143,22 @@ class LivePositionTracker {
     final motion = (map['motion'] as num).toDouble();
     final now = (map['timestamp'] as int) / 1e9;
 
-    if (_stepDetectionEnabled &&
-        motion >= stepMotionThreshold &&
-        (now - _lastStepTime) > stepCooldownSeconds) {
-      _lastStepTime = now;
-      final tangentHeadingDeg = _sampleAt(_progress).headingDeg;
-      final forward = _angleDiffDeg(heading, tangentHeadingDeg).abs() < 90.0;
-      _progress = (_progress + (forward ? stepLengthMeters : -stepLengthMeters))
-          .clamp(0.0, _totalDistance);
+    if (_stepDetectionEnabled && motion >= stepMotionThreshold) {
+      final gap = now - _lastPeakTime;
+      // Debounces one footstep's rising motion from being counted as
+      // multiple spikes in quick succession.
+      if (gap >= _minStepIntervalSeconds) {
+        _consecutivePeaks =
+            (gap <= _maxStepIntervalSeconds && _consecutivePeaks > 0) ? _consecutivePeaks + 1 : 1;
+        _lastPeakTime = now;
+
+        if (_consecutivePeaks >= 2) {
+          final tangentHeadingDeg = _sampleAt(_progress).headingDeg;
+          final forward = _angleDiffDeg(heading, tangentHeadingDeg).abs() < 90.0;
+          _progress = (_progress + (forward ? stepLengthMeters : -stepLengthMeters))
+              .clamp(0.0, _totalDistance);
+        }
+      }
     }
 
     final sample = _sampleAt(_progress);
