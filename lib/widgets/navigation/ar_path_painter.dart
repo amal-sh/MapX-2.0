@@ -22,6 +22,7 @@ class ArPathPainter extends CustomPainter {
   final String destinationLabel;
   final double cameraHeight;
   final double verticalFovDegrees;
+  final double? liveProgress;
 
   ArPathPainter({
     required this.route,
@@ -34,6 +35,7 @@ class ArPathPainter extends CustomPainter {
     required this.destinationLabel,
     this.cameraHeight = 1.35,
     this.verticalFovDegrees = 60.0,
+    this.liveProgress,
   });
 
   @override
@@ -83,21 +85,21 @@ class ArPathPainter extends CustomPainter {
     final uz = -r0z * sinR + u0z * cosR;
 
     const nearPlane = 0.15;
-    final dyTerm = -effCameraHeight * fy;
 
     // Depth of a floor point along the camera's optical axis - used to test
     // whether it's in front of the camera before projecting it.
-    double zCamAt(double east, double north) {
+    double zCamAt(double east, double north, [double altitudeOffset = 0.0]) {
       final dx = east - liveEast;
+      final dy = -effCameraHeight + altitudeOffset;
       final dz = north - liveNorth;
-      return dx * fx + dz * fz + dyTerm;
+      return dx * fx + dy * fy + dz * fz;
     }
 
     // Projects a floor point (east, north) into screen space, or returns
     // null if it falls behind the camera.
-    Offset? project(double east, double north) {
+    Offset? project(double east, double north, [double altitudeOffset = 0.0]) {
       final dx = east - liveEast;
-      final dy = -effCameraHeight;
+      final dy = -effCameraHeight + altitudeOffset;
       final dz = north - liveNorth;
 
       final zCam = dx * fx + dy * fy + dz * fz;
@@ -241,7 +243,20 @@ class ArPathPainter extends CustomPainter {
       canvas.drawPath(linePath, Paint()..color = lineColor);
     }
 
-    // 2. Start marker.
+    // 2. Floor-anchored direction arrows (chevrons) pointing forward along the path.
+    _drawFloorDirectionArrows(
+      canvas: canvas,
+      route: route,
+      distances: distances,
+      totalDistance: totalDistance,
+      startDist: startDist,
+      visibleEndDist: visibleEndDist,
+      project: project,
+      zCamAt: zCamAt,
+      nearPlane: nearPlane,
+    );
+
+    // 3. Start marker.
     final start = route.first;
     final startPos = project(start.east, start.north);
     if (startPos != null &&
@@ -252,7 +267,7 @@ class ArPathPainter extends CustomPainter {
       _drawFloorMarker(canvas, startPos, const Color(0xFF10B981), startLabel, 'START');
     }
 
-    // 3. Destination marker, or an off-screen cue pointing toward it.
+    // 4. Destination marker, or an off-screen cue pointing toward it.
     final dest = route.last;
     final destPos = project(dest.east, dest.north);
     if (destPos != null &&
@@ -275,6 +290,202 @@ class ArPathPainter extends CustomPainter {
           relAngle -= 2 * math.pi;
         }
         _drawOffScreenCue(canvas, size, relAngle, destDist, destinationLabel);
+      }
+    }
+  }
+
+  void _drawFloorDirectionArrows({
+    required Canvas canvas,
+    required List<PathNode> route,
+    required List<double> distances,
+    required double totalDistance,
+    required double startDist,
+    required double visibleEndDist,
+    required Offset? Function(double east, double north, [double altitudeOffset]) project,
+    required double Function(double east, double north, [double altitudeOffset]) zCamAt,
+    required double nearPlane,
+  }) {
+    if (route.length < 2 || distances.length < 2) return;
+
+    ({double east, double north}) samplePosition(double s) {
+      if (s <= 0 || distances.isEmpty) {
+        return (east: route.first.east, north: route.first.north);
+      }
+      if (s >= totalDistance) {
+        return (east: route.last.east, north: route.last.north);
+      }
+      var idx = 0;
+      while (idx < distances.length - 2 && distances[idx + 1] < s) {
+        idx++;
+      }
+      final segLen = distances[idx + 1] - distances[idx];
+      if (segLen < 0.0001) {
+        return (east: route[idx].east, north: route[idx].north);
+      }
+      final t = (s - distances[idx]) / segLen;
+      return (
+        east: route[idx].east + (route[idx + 1].east - route[idx].east) * t,
+        north: route[idx].north + (route[idx + 1].north - route[idx].north) * t,
+      );
+    }
+
+    ({double te, double tn, double ne, double nn}) sampleTangent(double s) {
+      final s1 = (s - 0.25).clamp(0.0, totalDistance);
+      final s2 = (s + 0.25).clamp(0.0, totalDistance);
+      final p1 = samplePosition(s1);
+      final p2 = samplePosition(s2);
+      final de = p2.east - p1.east;
+      final dn = p2.north - p1.north;
+      final len = math.sqrt(de * de + dn * dn);
+      if (len < 0.0001) {
+        return (te: 0.0, tn: 1.0, ne: 1.0, nn: 0.0);
+      }
+      final te = de / len;
+      final tn = dn / len;
+      // In floor East/North coordinates, rightward normal vector is (tn, -te)
+      return (te: te, tn: tn, ne: tn, nn: -te);
+    }
+
+    final sUser = liveProgress ?? startDist;
+    const arrowSpacing = 1.35; // Spaced every 1.35 meters along the route
+    final firstArrowDist = sUser + 0.85;
+    final lastArrowDist = math.min(totalDistance - 0.5, visibleEndDist);
+
+    if (firstArrowDist >= lastArrowDist) return;
+
+    for (var s = firstArrowDist; s <= lastArrowDist; s += arrowSpacing) {
+      final distFromUser = s - sUser;
+      if (distFromUser < 0.4) continue;
+
+      // Smooth fade-in near the user (0.6m -> 1.2m)
+      final nearFade = ((distFromUser - 0.6) / 0.6).clamp(0.0, 1.0);
+      // Smooth fade-out near the visible horizon cutoff (last 2.2m)
+      final farFade = ((visibleEndDist - s) / 2.2).clamp(0.0, 1.0);
+      final distFade = nearFade * farFade;
+      if (distFade <= 0.02) continue;
+
+      final pos = samplePosition(s);
+      final tangent = sampleTangent(s);
+
+      // Marching wave pulse flowing towards the destination along the floor
+      final wavePhase = (((s - sUser) / 3.2) - animationProgress) % 1.0;
+      final normPhase = wavePhase < 0 ? wavePhase + 1.0 : wavePhase;
+      final wavePulse = math.sin(normPhase * math.pi * 2.0);
+      final pulseFactor = 0.70 + 0.30 * (wavePulse > 0 ? wavePulse : 0);
+      final totalAlpha = (distFade * pulseFactor).clamp(0.0, 1.0);
+
+      // Physical chevron dimensions on the ARCore floor plane (meters)
+      const arrowWidth = 0.42;
+      const arrowLength = 0.40;
+      const halfW = arrowWidth * 0.5;
+      const halfL = arrowLength * 0.5;
+
+      // Local 2D floor vertices: u is lateral (right), v is longitudinal (forward)
+      final localOuter = [
+        (u: 0.0, v: halfL),
+        (u: halfW, v: -halfL),
+        (u: 0.0, v: -halfL * 0.25),
+        (u: -halfW, v: -halfL),
+      ];
+
+      const inW = halfW * 0.52;
+      const inL = halfL * 0.58;
+      final localInner = [
+        (u: 0.0, v: inL),
+        (u: inW, v: -inL),
+        (u: 0.0, v: -inL * 0.25),
+        (u: -inW, v: -inL),
+      ];
+
+      // Convert 3D floor coordinates to screen perspective
+      const altOffset = 0.006; // 6mm above floor plane to sit cleanly on ribbon
+      final outerScreen = <Offset>[];
+      var allOuterVisible = true;
+      for (final vert in localOuter) {
+        final e = pos.east + vert.u * tangent.ne + vert.v * tangent.te;
+        final n = pos.north + vert.u * tangent.nn + vert.v * tangent.tn;
+        final p = project(e, n, altOffset);
+        if (p == null) {
+          allOuterVisible = false;
+          break;
+        }
+        outerScreen.add(p);
+      }
+      if (!allOuterVisible || outerScreen.length < 4) continue;
+
+      final zCenter = zCamAt(pos.east, pos.north, altOffset);
+      final depthScale = (1.0 / zCenter.clamp(nearPlane, double.infinity)).clamp(0.15, 1.0);
+
+      final outerPath = Path()
+        ..moveTo(outerScreen[0].dx, outerScreen[0].dy)
+        ..lineTo(outerScreen[1].dx, outerScreen[1].dy)
+        ..lineTo(outerScreen[2].dx, outerScreen[2].dy)
+        ..lineTo(outerScreen[3].dx, outerScreen[3].dy)
+        ..close();
+
+      // 1. Contact shadow on the physical floor
+      canvas.drawPath(
+        outerPath,
+        Paint()
+          ..color = Colors.black.withValues(alpha: 0.35 * totalAlpha)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0)
+          ..style = PaintingStyle.fill,
+      );
+
+      // 2. Ambient neon glow
+      canvas.drawPath(
+        outerPath,
+        Paint()
+          ..color = const Color(0xFF00E5FF).withValues(alpha: 0.40 * totalAlpha)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.5)
+          ..style = PaintingStyle.fill,
+      );
+
+      // 3. Electric cyan body
+      canvas.drawPath(
+        outerPath,
+        Paint()
+          ..color = const Color(0xFF00E5FF).withValues(alpha: 0.72 * totalAlpha)
+          ..style = PaintingStyle.fill,
+      );
+
+      // 4. Sharp border highlight
+      canvas.drawPath(
+        outerPath,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.92 * totalAlpha)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, 1.8 * depthScale),
+      );
+
+      // 5. Projected inner illuminated core
+      final innerScreen = <Offset>[];
+      var allInnerVisible = true;
+      for (final vert in localInner) {
+        final e = pos.east + vert.u * tangent.ne + vert.v * tangent.te;
+        final n = pos.north + vert.u * tangent.nn + vert.v * tangent.tn;
+        final p = project(e, n, altOffset + 0.001);
+        if (p == null) {
+          allInnerVisible = false;
+          break;
+        }
+        innerScreen.add(p);
+      }
+
+      if (allInnerVisible && innerScreen.length >= 4) {
+        final innerPath = Path()
+          ..moveTo(innerScreen[0].dx, innerScreen[0].dy)
+          ..lineTo(innerScreen[1].dx, innerScreen[1].dy)
+          ..lineTo(innerScreen[2].dx, innerScreen[2].dy)
+          ..lineTo(innerScreen[3].dx, innerScreen[3].dy)
+          ..close();
+
+        canvas.drawPath(
+          innerPath,
+          Paint()
+            ..color = Colors.white.withValues(alpha: 0.85 * totalAlpha)
+            ..style = PaintingStyle.fill,
+        );
       }
     }
   }

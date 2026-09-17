@@ -281,6 +281,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                     destinationLabel: _destination?.label ?? 'Destination',
                     cameraHeight: _liveCameraHeight,
                     verticalFovDegrees: _liveFov,
+                    liveProgress: _liveProgress,
                   ),
                 ),
               ),
