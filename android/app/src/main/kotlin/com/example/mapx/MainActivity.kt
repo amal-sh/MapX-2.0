@@ -6,49 +6,61 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.opengl.GLES20
-import android.opengl.GLSurfaceView
 import android.os.Handler
 import android.os.Looper
-import android.view.ViewGroup
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.ar.core.ArCoreApk
-import com.google.ar.core.Session
-import com.google.ar.core.TrackingState
-import com.google.ar.core.exceptions.CameraNotAvailableException
-import com.google.ar.core.exceptions.UnavailableException
+import io.flutter.embedding.android.FlutterActivityLaunchConfigs
 import io.flutter.embedding.android.FlutterActivity
+import io.github.sceneview.ar.ArSceneView
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
-import javax.microedition.khronos.egl.EGLConfig
-import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 class MainActivity : FlutterActivity(), SensorEventListener {
+    override fun getBackgroundMode(): FlutterActivityLaunchConfigs.BackgroundMode {
+        return FlutterActivityLaunchConfigs.BackgroundMode.transparent
+    }
+
+
     private val methodChannelName = "mapx/arcore"
     private val poseChannelName = "mapx/arcore_pose"
     private val cameraPermissionCode = 100
 
-    private var arSession: Session? = null
-    private var glSurfaceView: GLSurfaceView? = null
     private var eventSink: EventChannel.EventSink? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var sensorManager: SensorManager? = null
     private var rotationVectorSensor: Sensor? = null
+    private var gameRotationVectorSensor: Sensor? = null
     private var accelerometerSensor: Sensor? = null
     private var sensorsRegistered = false
 
     private val rotationMatrix = FloatArray(9)
-    private val remappedMatrix = FloatArray(9)
-    private val orientation = FloatArray(3)
+    private val gameRotationMatrix = FloatArray(9)
 
-    // Compass heading in degrees (0 = magnetic north, clockwise).
+    // Compass heading in degrees (0 = magnetic north, clockwise). Used for
+    // PDR step direction, matching how the map was recorded - never for AR
+    // rendering, since the magnetometer is what makes the on-screen path
+    // jitter near structural steel/electronics (see MapX AR floor-detection
+    // investigation).
     @Volatile
     private var heading = 0f
+
+    // A magnetometer-free heading for AR rendering only: TYPE_GAME_ROTATION_VECTOR
+    // (gyro+accel, no magnetic field) gives a smooth frame-to-frame delta with
+    // none of the compass jitter, at the cost of slowly drifting away from true
+    // north over time. renderHeading tracks that smooth delta but is
+    // continuously nudged back toward the real compass `heading`, capped slow
+    // enough (see updateGameOrientation) that the correction is never visible
+    // as a snap - a simple complementary filter.
+    @Volatile
+    private var renderHeading = 0f
+    private var renderHeadingInitialized = false
+    private var lastRawGameHeadingDeg = 0f
 
     // Phone tilt in degrees: ~90 held upright, ~0 lying flat.
     @Volatile
@@ -68,6 +80,14 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "checkAvailability" -> checkArCoreAvailability(result)
+                    "startArNavigation" -> {
+                        startArNavigationMode()
+                        result.success(null)
+                    }
+                    "stopArNavigation" -> {
+                        stopArNavigationMode()
+                        result.success(null)
+                    }
                     "startSession" -> {
                         startArSessionFlow()
                         result.success(null)
@@ -122,78 +142,65 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         }
     }
 
-    private fun setupArSession() {
-        if (arSession != null) return
-        try {
-            arSession = Session(this)
-            arSession?.resume()
-        } catch (e: UnavailableException) {
-            eventSink?.error("AR_SESSION_ERROR", e.message, null)
-            return
-        } catch (e: CameraNotAvailableException) {
-            eventSink?.error("CAMERA_UNAVAILABLE", e.message, null)
-            arSession = null
-            return
-        }
-
-        val view = GLSurfaceView(this)
-        view.setEGLContextClientVersion(2)
-        view.setRenderer(object : GLSurfaceView.Renderer {
-            override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-                val textures = IntArray(1)
-                GLES20.glGenTextures(1, textures, 0)
-                arSession?.setCameraTextureName(textures[0])
-            }
-
-            override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {}
-
-            override fun onDrawFrame(gl: GL10?) {
-                val session = arSession ?: return
-                try {
-                    val frame = session.update()
-                    val camera = frame.camera
-                    val pose = camera.pose
-
-                    // How many visual features ARCore is currently holding.
-                    // TrackingState still reads TRACKING when this is low, but
-                    // with little to see ARCore leans on IMU integration, which
-                    // over-reports distance - so this is the honest measure of
-                    // whether the position can be trusted.
-                    val featurePoints = frame.acquirePointCloud().use { cloud ->
-                        cloud.points.remaining() / 4
-                    }
-                    val data = mapOf(
-                        "x" to pose.tx(),
-                        "y" to pose.ty(),
-                        "z" to pose.tz(),
-                        "tracking" to (camera.trackingState == TrackingState.TRACKING),
-                        "heading" to heading,
-                        "tilt" to tilt,
-                        "motion" to motionLevel,
-                        // ARCore's own capture clock. Timing must not be taken
-                        // from arrival time on the Flutter side: these events
-                        // cross a thread boundary and arrive in bunches, which
-                        // makes normal movement look impossibly fast.
-                        "timestamp" to frame.timestamp,
-                        "features" to featurePoints
-                    )
-                    mainHandler.post { eventSink?.success(data) }
-                } catch (e: CameraNotAvailableException) {
-                    mainHandler.post { eventSink?.error("CAMERA_UNAVAILABLE", e.message, null) }
+        private fun setupArSession() {
+        // MAPPING PHASE: We no longer start ARCore here! We only need raw sensors.
+        setupSensors()
+        // Send dummy feature points so Flutter doesn't break
+        mainHandler.postDelayed(object : Runnable {
+            override fun run() {
+                val data = mapOf(
+                    "x" to 0f, "y" to 0f, "z" to 0f,
+                    "tracking" to true,
+                    "heading" to heading,
+                    "renderHeading" to renderHeading,
+                    "tilt" to tilt,
+                    "motion" to motionLevel,
+                    "timestamp" to System.nanoTime(),
+                    "features" to 100 // Dummy value
+                )
+                eventSink?.success(data)
+                if (sensorsRegistered) {
+                    mainHandler.postDelayed(this, 33) // ~30fps
                 }
             }
-        })
-        view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-        addContentView(view, ViewGroup.LayoutParams(1, 1))
-        glSurfaceView = view
+        }, 33)
+    }
 
-        setupSensors()
+    private var arSceneView: ArSceneView? = null
+
+    private fun stopArNavigationMode() {
+        arSceneView?.let { sceneView ->
+            lifecycle.removeObserver(sceneView)
+            val rootView = findViewById<android.view.ViewGroup>(android.R.id.content)
+            rootView.removeView(sceneView)
+            sceneView.destroy()
+        }
+        arSceneView = null
+    }
+
+    // The AR nav path is drawn as a Flutter CustomPaint overlay projected from
+    // live heading (see updateOrientation) and PDR position - not from ARCore
+    // plane/depth tracking, which this floor's low-texture surfaces made
+    // unreliable (see MapX AR floor-detection investigation). ArSceneView is
+    // kept only for its camera passthrough feed behind that overlay.
+    private fun startArNavigationMode() {
+        if (arSceneView != null) return
+
+        arSceneView = ArSceneView(this)
+        lifecycle.addObserver(arSceneView!!)
+
+        val rootView = findViewById<android.view.ViewGroup>(android.R.id.content)
+        rootView.addView(arSceneView, 0, android.view.ViewGroup.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        ))
     }
 
     private fun setupSensors() {
         if (sensorManager == null) {
             sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
             rotationVectorSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            gameRotationVectorSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
             accelerometerSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
             if (rotationVectorSensor == null) {
                 eventSink?.error(
@@ -212,6 +219,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         rotationVectorSensor?.let {
             manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
+        gameRotationVectorSensor?.let {
+            manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
         accelerometerSensor?.let {
             manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
@@ -227,6 +237,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
             Sensor.TYPE_ROTATION_VECTOR -> updateOrientation(event)
+            Sensor.TYPE_GAME_ROTATION_VECTOR -> updateGameOrientation(event)
             Sensor.TYPE_ACCELEROMETER -> updateMotion(event)
         }
     }
@@ -249,52 +260,87 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         motionLevel = motionLevel * 0.9f + deviation * 0.1f
     }
 
+    // Computes compass heading and tilt directly from the camera-facing
+    // direction (the rotation matrix's third column) instead of decomposing
+    // the matrix into yaw/pitch/roll Euler angles via remapCoordinateSystem +
+    // getOrientation(). Euler decomposition is only numerically stable away
+    // from a pitch = +-90 deg gimbal singularity - and MapX's AR view is
+    // normally held tilted down toward the floor, close enough to that
+    // singularity that heading for the *same* physical orientation could
+    // come out differently depending on the exact tilt at the moment (seen
+    // as the AR path not returning to the same spot after panning away and
+    // back). The camera-forward vector has no such singularity except when
+    // the phone points exactly straight up or down, which doesn't happen in
+    // normal use.
+    private fun headingAndTiltFromMatrix(r: FloatArray): Pair<Float, Float> {
+        // Device -Z axis (out the back, where the camera points), expressed
+        // in East-North-Up world coordinates - the third column of r.
+        val east = -r[2]
+        val north = -r[5]
+        val up = -r[8]
+
+        val headingDeg = (Math.toDegrees(Math.atan2(east.toDouble(), north.toDouble())).toFloat() + 360f) % 360f
+
+        // 0 deg = aiming at the horizon (old "tilt = 90"), 90 deg = aiming
+        // straight down or up (old "tilt = 0").
+        val pitchFromHorizontalDeg = Math.toDegrees(Math.asin(up.toDouble().coerceIn(-1.0, 1.0))).toFloat()
+        val tiltDeg = 90f - abs(pitchFromHorizontalDeg)
+
+        return Pair(headingDeg, tiltDeg)
+    }
+
     private fun updateOrientation(event: SensorEvent) {
         SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+        val (headingDeg, tiltDeg) = headingAndTiltFromMatrix(rotationMatrix)
+        heading = headingDeg
+        tilt = tiltDeg
+    }
 
-        // Tilt comes from the unremapped matrix, where pitch reads ~-90 with
-        // the phone upright and ~0 lying flat. The heading remap below is
-        // only valid while the phone is upright, so this is what tells us
-        // whether the heading can be trusted.
-        SensorManager.getOrientation(rotationMatrix, orientation)
-        tilt = Math.abs(Math.toDegrees(orientation[1].toDouble())).toFloat()
+    private fun updateGameOrientation(event: SensorEvent) {
+        SensorManager.getRotationMatrixFromVector(gameRotationMatrix, event.values)
+        val (rawGameHeadingDeg, _) = headingAndTiltFromMatrix(gameRotationMatrix)
 
-        // The default orientation assumes the phone lies flat, screen up.
-        // MapX is held upright with the camera facing forward, so the axes
-        // are remapped to read the heading the camera points at.
-        SensorManager.remapCoordinateSystem(
-            rotationMatrix, SensorManager.AXIS_X, SensorManager.AXIS_Z, remappedMatrix
-        )
-        SensorManager.getOrientation(remappedMatrix, orientation)
+        if (!renderHeadingInitialized) {
+            renderHeading = heading
+            lastRawGameHeadingDeg = rawGameHeadingDeg
+            renderHeadingInitialized = true
+            return
+        }
 
-        val degrees = Math.toDegrees(orientation[0].toDouble()).toFloat()
-        heading = (degrees + 360f) % 360f
+        // This frame's smooth, magnetometer-free rotation, applied as a delta
+        // so only the *change* since last frame comes from the game vector -
+        // its absolute heading isn't referenced to true north at all.
+        var delta = rawGameHeadingDeg - lastRawGameHeadingDeg
+        if (delta > 180f) delta -= 360f
+        if (delta < -180f) delta += 360f
+        renderHeading = (renderHeading + delta + 360f) % 360f
+        lastRawGameHeadingDeg = rawGameHeadingDeg
+
+        // Slowly pull renderHeading back toward the true compass heading so
+        // it doesn't drift indefinitely, capped small enough per sample that
+        // the correction is never visible as a snap.
+        var correction = heading - renderHeading
+        if (correction > 180f) correction -= 360f
+        if (correction < -180f) correction += 360f
+        val maxCorrectionPerSample = 0.05f
+        correction = correction.coerceIn(-maxCorrectionPerSample, maxCorrectionPerSample)
+        renderHeading = (renderHeading + correction + 360f) % 360f
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onResume() {
         super.onResume()
-        try {
-            arSession?.resume()
-        } catch (e: CameraNotAvailableException) {
-            eventSink?.error("CAMERA_UNAVAILABLE", e.message, null)
-        }
-        glSurfaceView?.onResume()
         registerSensors()
     }
 
     override fun onPause() {
         super.onPause()
-        glSurfaceView?.onPause()
-        arSession?.pause()
         unregisterSensors()
     }
 
     override fun onDestroy() {
         unregisterSensors()
-        arSession?.close()
-        arSession = null
         super.onDestroy()
     }
 }

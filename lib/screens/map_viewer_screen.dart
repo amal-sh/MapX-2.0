@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../logic/live_position_tracker.dart';
 import '../models/map_models.dart';
+import '../widgets/navigation/ar_path_painter.dart';
 import '../widgets/path_map_painter.dart';
+import 'package:flutter/services.dart';
 
 class MapViewerScreen extends StatefulWidget {
   final String mapKey;
@@ -15,7 +19,7 @@ class MapViewerScreen extends StatefulWidget {
   State<MapViewerScreen> createState() => _MapViewerScreenState();
 }
 
-class _MapViewerScreenState extends State<MapViewerScreen> {
+class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProviderStateMixin {
   bool _isLoading = true;
   List<PathSegment> _segments = [];
   List<Waypoint> _waypoints = [];
@@ -23,17 +27,37 @@ class _MapViewerScreenState extends State<MapViewerScreen> {
 
   Waypoint? _startLocation;
   Waypoint? _destination;
+  bool _isArMode = false;
+  static const platform = MethodChannel('mapx/arcore');
+
+  late final AnimationController _pulseController;
+  LivePositionTracker? _tracker;
+  StreamSubscription<LivePosition>? _positionSub;
+  double _liveEast = 0;
+  double _liveNorth = 0;
+  double _liveHeading = 0;
+  double _liveTilt = 90;
 
   @override
   void initState() {
     super.initState();
+    _pulseController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1500))
+      ..repeat();
     _loadMapData();
+  }
+
+  @override
+  void dispose() {
+    _positionSub?.cancel();
+    _tracker?.dispose();
+    _pulseController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadMapData() async {
     final prefs = await SharedPreferences.getInstance();
     final jsonStr = prefs.getString(widget.mapKey);
-    
+
     if (jsonStr != null) {
       final mapData = jsonDecode(jsonStr);
       final List<PathSegment> segments = [];
@@ -42,18 +66,28 @@ class _MapViewerScreenState extends State<MapViewerScreen> {
           segments.add(PathSegment.fromJson(s));
         }
       }
-      
+
       final List<Waypoint> waypoints = [];
       if (mapData['waypoints'] != null) {
         for (var w in mapData['waypoints']) {
           waypoints.add(Waypoint.fromJson(w));
         }
       }
-      
+
+      final stepCount = mapData['stepCount'] as int? ?? 0;
+      // Maps recorded without any "Add Marker" taps have no named waypoints,
+      // which would otherwise hide the start/destination pickers entirely.
+      // Fall back to the walk's own start and end so a route (and AR
+      // navigation) is still selectable.
+      if (waypoints.isEmpty && stepCount > 0) {
+        waypoints.add(Waypoint(0, 'Start'));
+        waypoints.add(Waypoint(stepCount, 'End'));
+      }
+
       setState(() {
         _segments = segments;
         _waypoints = waypoints;
-        _stepCount = mapData['stepCount'] ?? 0;
+        _stepCount = stepCount;
         _isLoading = false;
       });
     } else {
@@ -67,9 +101,9 @@ class _MapViewerScreenState extends State<MapViewerScreen> {
     final List<PathNode> nodes = [];
     double currentEast = 0;
     double currentNorth = 0;
-    
+
     nodes.add(PathNode(0, 0, currentEast, currentNorth));
-    
+
     int index = 1;
     for (final segment in _segments) {
       final avgHeadingRad = segment.averageHeading * pi / 180.0;
@@ -97,10 +131,10 @@ class _MapViewerScreenState extends State<MapViewerScreen> {
     final nodes = _computedNodes;
     int startIdx = _startLocation!.globalStepIndex;
     int endIdx = _destination!.globalStepIndex;
-    
+
     if (startIdx >= nodes.length) startIdx = nodes.length - 1;
     if (endIdx >= nodes.length) endIdx = nodes.length - 1;
-    
+
     if (startIdx <= endIdx) {
       return nodes.sublist(startIdx, endIdx + 1);
     } else {
@@ -108,12 +142,120 @@ class _MapViewerScreenState extends State<MapViewerScreen> {
     }
   }
 
+  Future<void> _startArNavigation() async {
+    final route = _routeNodes;
+    if (route == null || route.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a start and destination below first')),
+      );
+      return;
+    }
+
+    try {
+      await platform.invokeMethod('startSession');
+      await platform.invokeMethod('startArNavigation');
+    } on PlatformException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message ?? 'Could not start AR')),
+        );
+      }
+      return;
+    }
+
+    _liveEast = route.first.east;
+    _liveNorth = route.first.north;
+    _tracker = LivePositionTracker(route: route);
+    _positionSub = _tracker!.positions.listen((pos) {
+      if (!mounted) return;
+      setState(() {
+        _liveEast = pos.east;
+        _liveNorth = pos.north;
+        _liveHeading = pos.headingDegrees;
+        _liveTilt = pos.tiltDegrees;
+      });
+    });
+    _tracker!.start();
+
+    if (mounted) setState(() => _isArMode = true);
+  }
+
+  Future<void> _stopArNavigation() async {
+    await _positionSub?.cancel();
+    _positionSub = null;
+    _tracker?.dispose();
+    _tracker = null;
+    try {
+      await platform.invokeMethod('stopArNavigation');
+    } catch (e) {
+      print("AR Error: $e");
+    }
+    if (mounted) setState(() => _isArMode = false);
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_isArMode) {
+      final route = _routeNodes ?? const <PathNode>[];
+      return Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Stack(
+          children: [
+            AnimatedBuilder(
+              animation: _pulseController,
+              builder: (context, _) => CustomPaint(
+                size: Size.infinite,
+                painter: ArPathPainter(
+                  route: route,
+                  liveEast: _liveEast,
+                  liveNorth: _liveNorth,
+                  headingDegrees: _liveHeading,
+                  tiltDegrees: _liveTilt,
+                  animationProgress: _pulseController.value,
+                  startLabel: _startLocation?.label ?? 'Start',
+                  destinationLabel: _destination?.label ?? 'Destination',
+                ),
+              ),
+            ),
+            Positioned(
+              top: 50,
+              left: 20,
+              child: IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white, size: 30),
+                onPressed: _stopArNavigation,
+              ),
+            ),
+            Positioned(
+              top: 50,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  'H ${_liveHeading.toStringAsFixed(0)}°  T ${_liveTilt.toStringAsFixed(0)}°',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     final nodes = _computedNodes;
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.mapName),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.view_in_ar),
+            tooltip: 'Start AR Navigation',
+            onPressed: _startArNavigation,
+          )
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -183,7 +325,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> {
                         // We give the painter a fixed size canvas, and InteractiveViewer handles the zooming.
                         // However, PathMapPainter currently scales to the canvas size.
                         // Let's pass a huge size and let it draw in the middle, then InteractiveViewer zooms it.
-                        size: const Size(2000, 2000), 
+                        size: const Size(2000, 2000),
                       ),
                     ),
                   ),

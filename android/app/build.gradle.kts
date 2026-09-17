@@ -40,6 +40,8 @@ android {
 
 dependencies {
     implementation("com.google.ar:core:1.56.0")
+    // Sceneview for 3D AR rendering
+    implementation("io.github.sceneview:arsceneview:0.10.0")
 }
 
 flutter {
