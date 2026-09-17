@@ -7,6 +7,7 @@ import '../logic/live_position_tracker.dart';
 import '../logic/route_instructions.dart';
 import '../models/map_models.dart';
 import '../widgets/navigation/ar_path_painter.dart';
+import '../widgets/navigation/ar_world_scanner_overlay.dart';
 import '../widgets/path_map_painter.dart';
 import 'package:flutter/services.dart';
 
@@ -41,6 +42,11 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   double _liveProgress = 0;
   double _routeTotalDistance = 0;
   List<TurnInstruction> _turnInstructions = const [];
+  bool _isFloorDetected = false;
+  double _liveCameraHeight = 1.35;
+  double _liveFov = 60.0;
+  bool _showFloorAnchoredBadge = false;
+  Timer? _badgeTimer;
 
   @override
   void initState() {
@@ -52,6 +58,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
   @override
   void dispose() {
+    _badgeTimer?.cancel();
     _positionSub?.cancel();
     _tracker?.dispose();
     _pulseController.dispose();
@@ -167,6 +174,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       return;
     }
 
+    _isFloorDetected = false;
+    _showFloorAnchoredBadge = false;
     _liveEast = route.first.east;
     _liveNorth = route.first.north;
     _liveProgress = 0;
@@ -175,13 +184,25 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _routeTotalDistance = _tracker!.totalDistance;
     _positionSub = _tracker!.positions.listen((pos) {
       if (!mounted) return;
+      final wasDetected = _isFloorDetected;
       setState(() {
         _liveEast = pos.east;
         _liveNorth = pos.north;
         _liveHeading = pos.headingDegrees;
         _liveTilt = pos.tiltDegrees;
         _liveProgress = pos.progress;
+        _isFloorDetected = pos.isFloorDetected;
+        _liveCameraHeight = pos.cameraHeight;
+        _liveFov = pos.verticalFovDegrees;
       });
+
+      if (!wasDetected && pos.isFloorDetected) {
+        setState(() => _showFloorAnchoredBadge = true);
+        _badgeTimer?.cancel();
+        _badgeTimer = Timer(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _showFloorAnchoredBadge = false);
+        });
+      }
     });
     _tracker!.start();
 
@@ -220,6 +241,9 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   }
 
   Future<void> _stopArNavigation() async {
+    _badgeTimer?.cancel();
+    _isFloorDetected = false;
+    _showFloorAnchoredBadge = false;
     await _positionSub?.cancel();
     _positionSub = null;
     _tracker?.dispose();
@@ -227,7 +251,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     try {
       await platform.invokeMethod('stopArNavigation');
     } catch (e) {
-      print("AR Error: $e");
+      debugPrint("AR Error: $e");
     }
     if (mounted) setState(() => _isArMode = false);
   }
@@ -240,60 +264,127 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         backgroundColor: Colors.transparent,
         body: Stack(
           children: [
-            AnimatedBuilder(
-              animation: _pulseController,
-              builder: (context, _) => CustomPaint(
-                size: Size.infinite,
-                painter: ArPathPainter(
-                  route: route,
-                  liveEast: _liveEast,
-                  liveNorth: _liveNorth,
-                  headingDegrees: _liveHeading,
-                  tiltDegrees: _liveTilt,
-                  animationProgress: _pulseController.value,
-                  startLabel: _startLocation?.label ?? 'Start',
-                  destinationLabel: _destination?.label ?? 'Destination',
+            // Glowing route line anchored to the real floor
+            if (_isFloorDetected)
+              AnimatedBuilder(
+                animation: _pulseController,
+                builder: (context, _) => CustomPaint(
+                  size: Size.infinite,
+                  painter: ArPathPainter(
+                    route: route,
+                    liveEast: _liveEast,
+                    liveNorth: _liveNorth,
+                    headingDegrees: _liveHeading,
+                    tiltDegrees: _liveTilt,
+                    animationProgress: _pulseController.value,
+                    startLabel: _startLocation?.label ?? 'Start',
+                    destinationLabel: _destination?.label ?? 'Destination',
+                    cameraHeight: _liveCameraHeight,
+                    verticalFovDegrees: _liveFov,
+                  ),
                 ),
               ),
-            ),
-            Positioned(
-              top: 50,
-              left: 20,
-              child: IconButton(
-                icon: const Icon(Icons.arrow_back, color: Colors.white, size: 30),
-                onPressed: _stopArNavigation,
+
+            // Scanning HUD loader while ARCore detects floor plane
+            if (!_isFloorDetected)
+              ArWorldScannerOverlay(
+                onCancel: _stopArNavigation,
               ),
-            ),
-            Positioned(
-              top: 50,
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  'H ${_liveHeading.toStringAsFixed(0)}°  T ${_liveTilt.toStringAsFixed(0)}°',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+
+            // Back button when in AR navigation mode
+            if (_isFloorDetected)
+              Positioned(
+                top: 50,
+                left: 20,
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.white, size: 30),
+                  onPressed: _stopArNavigation,
                 ),
               ),
-            ),
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 100,
-              left: 16,
-              right: 16,
-              child: _GuidanceBanner(guidance: _currentGuidance),
-            ),
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: MediaQuery.of(context).padding.bottom + 24,
-              child: _DistanceBar(
-                remainingMeters: (_routeTotalDistance - _liveProgress).clamp(0.0, double.infinity),
-                totalMeters: _routeTotalDistance,
+
+            // Real-time floor height and orientation HUD
+            if (_isFloorDetected)
+              Positioned(
+                top: 50,
+                right: 20,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F172A).withValues(alpha: 0.85),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.4),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.anchor, color: Color(0xFF10B981), size: 14),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Floor ${_liveCameraHeight.toStringAsFixed(2)}m',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            ),
+
+            // Temporary "Floor Anchored in 3D Space" confirmation badge
+            if (_showFloorAnchoredBadge)
+              Positioned(
+                top: 100,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A).withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFF10B981), width: 1.2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.35),
+                          blurRadius: 14,
+                        ),
+                      ],
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+                        SizedBox(width: 8),
+                        Text(
+                          'Floor Anchored in 3D Space',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            if (_isFloorDetected) ...[
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 100,
+                left: 16,
+                right: 16,
+                child: _GuidanceBanner(guidance: _currentGuidance),
+              ),
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: MediaQuery.of(context).padding.bottom + 24,
+                child: _DistanceBar(
+                  remainingMeters: (_routeTotalDistance - _liveProgress).clamp(0.0, double.infinity),
+                  totalMeters: _routeTotalDistance,
+                ),
+              ),
+            ],
           ],
         ),
       );

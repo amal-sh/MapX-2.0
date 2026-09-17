@@ -6,13 +6,17 @@ import 'package:flutter/services.dart';
 import '../models/map_models.dart';
 
 /// A live snapshot of the walker's estimated position and device orientation
-/// during navigation.
+/// during navigation, including ARCore floor plane detection metrics.
 class LivePosition {
   final double east;
   final double north;
   final double headingDegrees;
   final double tiltDegrees;
   final double progress; // arc-length meters walked along the route
+  final bool isFloorDetected;
+  final double cameraHeight;
+  final double verticalFovDegrees;
+  final String arTrackingState;
 
   const LivePosition({
     required this.east,
@@ -20,6 +24,10 @@ class LivePosition {
     required this.headingDegrees,
     required this.tiltDegrees,
     required this.progress,
+    this.isFloorDetected = false,
+    this.cameraHeight = 1.35,
+    this.verticalFovDegrees = 60.0,
+    this.arTrackingState = 'INITIALIZING',
   });
 }
 
@@ -111,6 +119,8 @@ class LivePositionTracker {
   double? _smoothedSin;
   double? _smoothedCos;
   double? _smoothedTilt;
+  double? _smoothedCameraHeight;
+  double? _smoothedFov;
 
   LivePositionTracker({required this.route, double startProgress = 0})
       : _progress = startProgress,
@@ -201,12 +211,24 @@ class LivePositionTracker {
     _smoothedTilt = _lerp(_smoothedTilt, tilt, _headingSmoothing);
     final smoothedHeadingDeg = (atan2(_smoothedSin!, _smoothedCos!) * 180.0 / pi + 360.0) % 360.0;
 
+    final isFloorDetected = (map['floorDetected'] as bool?) ?? false;
+    final floorHeightRaw = (map['floorHeight'] as num?)?.toDouble() ?? 1.35;
+    final fovRaw = (map['cameraFovY'] as num?)?.toDouble() ?? 60.0;
+    final arTrackingState = (map['arTrackingState'] as String?) ?? 'INITIALIZING';
+
+    _smoothedCameraHeight = _lerp(_smoothedCameraHeight, floorHeightRaw, 0.1);
+    _smoothedFov = _lerp(_smoothedFov, fovRaw, 0.1);
+
     _controller.add(LivePosition(
       east: sample.east,
       north: sample.north,
       headingDegrees: smoothedHeadingDeg,
       tiltDegrees: _smoothedTilt!,
       progress: _displayedProgress,
+      isFloorDetected: isFloorDetected,
+      cameraHeight: _smoothedCameraHeight ?? 1.35,
+      verticalFovDegrees: _smoothedFov ?? 60.0,
+      arTrackingState: arTrackingState,
     ));
   }
 

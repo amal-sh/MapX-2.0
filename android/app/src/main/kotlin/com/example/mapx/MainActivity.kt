@@ -11,6 +11,9 @@ import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.ar.core.ArCoreApk
+import com.google.ar.core.Config
+import com.google.ar.core.Plane
+import com.google.ar.core.TrackingState
 import io.flutter.embedding.android.FlutterActivityLaunchConfigs
 import io.flutter.embedding.android.FlutterActivity
 import io.github.sceneview.ar.ArSceneView
@@ -72,6 +75,16 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var motionLevel = 0f
 
     private var magnitudeBaseline = SensorManager.GRAVITY_EARTH
+
+    // ARCore floor detection state
+    @Volatile
+    private var floorDetected = false
+    @Volatile
+    private var floorHeight = 1.35f
+    @Volatile
+    private var cameraFovY = 60.0f
+    @Volatile
+    private var arTrackingState = "INITIALIZING"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -142,10 +155,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         }
     }
 
-        private fun setupArSession() {
-        // MAPPING PHASE: We no longer start ARCore here! We only need raw sensors.
+    private fun setupArSession() {
+        // MAPPING / NAV PHASE: Sensors drive the live position & heading
         setupSensors()
-        // Send dummy feature points so Flutter doesn't break
         mainHandler.postDelayed(object : Runnable {
             override fun run() {
                 val data = mapOf(
@@ -156,7 +168,11 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     "tilt" to tilt,
                     "motion" to motionLevel,
                     "timestamp" to System.nanoTime(),
-                    "features" to 100 // Dummy value
+                    "features" to 100, // Dummy value
+                    "floorDetected" to floorDetected,
+                    "floorHeight" to floorHeight.toDouble(),
+                    "cameraFovY" to cameraFovY.toDouble(),
+                    "arTrackingState" to arTrackingState
                 )
                 eventSink?.success(data)
                 if (sensorsRegistered) {
@@ -169,6 +185,8 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var arSceneView: ArSceneView? = null
 
     private fun stopArNavigationMode() {
+        floorDetected = false
+        arTrackingState = "STOPPED"
         arSceneView?.let { sceneView ->
             lifecycle.removeObserver(sceneView)
             val rootView = findViewById<android.view.ViewGroup>(android.R.id.content)
@@ -178,15 +196,90 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         arSceneView = null
     }
 
-    // The AR nav path is drawn as a Flutter CustomPaint overlay projected from
-    // live heading (see updateOrientation) and PDR position - not from ARCore
-    // plane/depth tracking, which this floor's low-texture surfaces made
-    // unreliable (see MapX AR floor-detection investigation). ArSceneView is
-    // kept only for its camera passthrough feed behind that overlay.
+    // ARCore floor detection and anchoring:
+    // ArSceneView actively scans for HORIZONTAL_UPWARD_FACING planes (the floor)
+    // and tests camera-to-floor distance & FOV to anchor the navigation line
+    // precisely to the physical ground.
     private fun startArNavigationMode() {
         if (arSceneView != null) return
 
-        arSceneView = ArSceneView(this)
+        floorDetected = false
+        arTrackingState = "INITIALIZING"
+
+        arSceneView = ArSceneView(this).apply {
+            planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
+            planeRenderer.isVisible = true
+            planeRenderer.isEnabled = true
+
+            onArFrame = { arFrame ->
+                val camera = arFrame.camera
+                val state = camera.trackingState
+                arTrackingState = state.name
+
+                if (state == TrackingState.TRACKING) {
+                    // 1. Try hit-test near the center-bottom of the viewport
+                    val w = width.toFloat()
+                    val h = height.toFloat()
+                    val hitX = if (w > 0) w * 0.5f else 500f
+                    val hitY = if (h > 0) h * 0.7f else 1000f
+
+                    var foundFloor = false
+                    val hit = arFrame.hitTest(hitX, hitY)
+                    if (hit != null) {
+                        val trackable = hit.trackable
+                        if (trackable is Plane &&
+                            trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
+                            trackable.trackingState == TrackingState.TRACKING
+                        ) {
+                            val camPose = camera.pose
+                            val hitPose = hit.hitPose
+                            val diff = camPose.ty() - hitPose.ty()
+                            if (diff in 0.3f..3.0f) {
+                                floorHeight = floorHeight * 0.9f + diff * 0.1f
+                                foundFloor = true
+                            }
+                        }
+                    }
+
+                    // 2. Fallback: query all active horizontal upward planes
+                    if (!foundFloor) {
+                        val planes = arFrame.session.getAllTrackables(Plane::class.java)
+                        val validFloorPlanes = planes.filter {
+                            it.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
+                            it.trackingState == TrackingState.TRACKING
+                        }
+                        if (validFloorPlanes.isNotEmpty()) {
+                            val camY = camera.pose.ty()
+                            val closestPlane = validFloorPlanes.minByOrNull { abs(camY - it.centerPose.ty()) }
+                            if (closestPlane != null) {
+                                val diff = camY - closestPlane.centerPose.ty()
+                                if (diff in 0.3f..3.0f) {
+                                    floorHeight = floorHeight * 0.9f + diff * 0.1f
+                                    foundFloor = true
+                                }
+                            }
+                        }
+                    }
+
+                    floorDetected = foundFloor
+
+                    // Compute vertical FOV from camera projection matrix
+                    try {
+                        val projMatrix = FloatArray(16)
+                        camera.getProjectionMatrix(projMatrix, 0, 0.1f, 100f)
+                        val p5 = projMatrix[5]
+                        if (p5 > 0.0001f) {
+                            val calculatedFovY = (2.0 * Math.atan(1.0 / p5.toDouble()) * 180.0 / Math.PI).toFloat()
+                            if (calculatedFovY in 30.0f..100.0f) {
+                                cameraFovY = cameraFovY * 0.95f + calculatedFovY * 0.05f
+                            }
+                        }
+                    } catch (_: Exception) {}
+                } else {
+                    floorDetected = false
+                }
+            }
+        }
         lifecycle.addObserver(arSceneView!!)
 
         val rootView = findViewById<android.view.ViewGroup>(android.R.id.content)

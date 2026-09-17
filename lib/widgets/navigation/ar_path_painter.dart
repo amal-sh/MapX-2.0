@@ -20,6 +20,8 @@ class ArPathPainter extends CustomPainter {
   final double animationProgress;
   final String startLabel;
   final String destinationLabel;
+  final double cameraHeight;
+  final double verticalFovDegrees;
 
   ArPathPainter({
     required this.route,
@@ -30,6 +32,8 @@ class ArPathPainter extends CustomPainter {
     required this.animationProgress,
     required this.startLabel,
     required this.destinationLabel,
+    this.cameraHeight = 1.35,
+    this.verticalFovDegrees = 60.0,
   });
 
   @override
@@ -45,9 +49,9 @@ class ArPathPainter extends CustomPainter {
     // drops toward 0 as the top of the phone tips down toward the floor, so
     // this maps it onto a pitch where 0 = level and negative = looking down.
     final pitch = (tiltDegrees - 90.0) * math.pi / 180.0;
-    const cameraHeight = 1.35;
+    final effCameraHeight = cameraHeight.clamp(0.4, 2.5);
 
-    const fovV = 60.0 * math.pi / 180.0;
+    final fovV = (verticalFovDegrees.clamp(35.0, 90.0)) * math.pi / 180.0;
     final focalLength = (height * 0.5) / math.tan(fovV * 0.5);
 
     final heading = headingDegrees * math.pi / 180.0;
@@ -79,7 +83,7 @@ class ArPathPainter extends CustomPainter {
     final uz = -r0z * sinR + u0z * cosR;
 
     const nearPlane = 0.15;
-    final dyTerm = -cameraHeight * fy;
+    final dyTerm = -effCameraHeight * fy;
 
     // Depth of a floor point along the camera's optical axis - used to test
     // whether it's in front of the camera before projecting it.
@@ -93,7 +97,7 @@ class ArPathPainter extends CustomPainter {
     // null if it falls behind the camera.
     Offset? project(double east, double north) {
       final dx = east - liveEast;
-      final dy = -cameraHeight;
+      final dy = -effCameraHeight;
       final dz = north - liveNorth;
 
       final zCam = dx * fx + dy * fy + dz * fz;
