@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../logic/live_position_tracker.dart';
+import '../logic/route_instructions.dart';
 import '../models/map_models.dart';
 import '../widgets/navigation/ar_path_painter.dart';
 import '../widgets/path_map_painter.dart';
@@ -37,6 +38,9 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   double _liveNorth = 0;
   double _liveHeading = 0;
   double _liveTilt = 90;
+  double _liveProgress = 0;
+  double _routeTotalDistance = 0;
+  List<TurnInstruction> _turnInstructions = const [];
 
   @override
   void initState() {
@@ -165,7 +169,10 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
     _liveEast = route.first.east;
     _liveNorth = route.first.north;
+    _liveProgress = 0;
+    _turnInstructions = computeTurnInstructions(route);
     _tracker = LivePositionTracker(route: route);
+    _routeTotalDistance = _tracker!.totalDistance;
     _positionSub = _tracker!.positions.listen((pos) {
       if (!mounted) return;
       setState(() {
@@ -173,11 +180,43 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         _liveNorth = pos.north;
         _liveHeading = pos.headingDegrees;
         _liveTilt = pos.tiltDegrees;
+        _liveProgress = pos.progress;
       });
     });
     _tracker!.start();
 
     if (mounted) setState(() => _isArMode = true);
+  }
+
+  ({String title, String subtitle, IconData icon}) get _currentGuidance {
+    final remaining = (_routeTotalDistance - _liveProgress).clamp(0.0, double.infinity);
+    if (remaining <= 1.0) {
+      return (
+        title: 'You have arrived',
+        subtitle: _destination?.label ?? '',
+        icon: Icons.flag,
+      );
+    }
+    for (final instr in _turnInstructions) {
+      if (instr.distance > _liveProgress) {
+        final distToTurn = instr.distance - _liveProgress;
+        final icon = instr.label.contains('U-turn')
+            ? Icons.u_turn_left
+            : instr.angleDeltaDeg > 0
+                ? Icons.turn_right
+                : Icons.turn_left;
+        return (
+          title: instr.label,
+          subtitle: 'in ${distToTurn.toStringAsFixed(0)}m',
+          icon: icon,
+        );
+      }
+    }
+    return (
+      title: 'Continue straight',
+      subtitle: 'to ${_destination?.label ?? "destination"}',
+      icon: Icons.straight,
+    );
   }
 
   Future<void> _stopArNavigation() async {
@@ -238,6 +277,21 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   'H ${_liveHeading.toStringAsFixed(0)}°  T ${_liveTilt.toStringAsFixed(0)}°',
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                 ),
+              ),
+            ),
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 100,
+              left: 16,
+              right: 16,
+              child: _GuidanceBanner(guidance: _currentGuidance),
+            ),
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: MediaQuery.of(context).padding.bottom + 24,
+              child: _DistanceBar(
+                remainingMeters: (_routeTotalDistance - _liveProgress).clamp(0.0, double.infinity),
+                totalMeters: _routeTotalDistance,
               ),
             ),
           ],
@@ -352,6 +406,95 @@ class _Stat extends StatelessWidget {
       children: [
         Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal)),
         Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      ],
+    );
+  }
+}
+
+/// Turn-by-turn guidance card, shown at the top of the AR view - a
+/// Google-Maps-style "next instruction" banner (icon, instruction, distance
+/// to it) rather than the plain heading readout.
+class _GuidanceBanner extends StatelessWidget {
+  final ({String title, String subtitle, IconData icon}) guidance;
+  const _GuidanceBanner({required this.guidance});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.4)),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 12, offset: const Offset(0, 4)),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: const BoxDecoration(color: Color(0xFF00E5FF), shape: BoxShape.circle),
+            child: Icon(guidance.icon, color: const Color(0xFF0F172A), size: 26),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  guidance.title,
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                if (guidance.subtitle.isNotEmpty)
+                  Text(guidance.subtitle, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Remaining-distance/steps bar, shown at the bottom of the AR view -
+/// Google-Maps-style trip summary.
+class _DistanceBar extends StatelessWidget {
+  final double remainingMeters;
+  final double totalMeters;
+  const _DistanceBar({required this.remainingMeters, required this.totalMeters});
+
+  @override
+  Widget build(BuildContext context) {
+    final stepsRemaining = (remainingMeters / LivePositionTracker.stepLengthMeters).round();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 12, offset: const Offset(0, 4)),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _distanceStat('${remainingMeters.toStringAsFixed(0)}m', 'remaining'),
+          Container(width: 1, height: 32, color: Colors.white24),
+          _distanceStat('$stepsRemaining', 'steps left'),
+          Container(width: 1, height: 32, color: Colors.white24),
+          _distanceStat('${totalMeters.toStringAsFixed(0)}m', 'total'),
+        ],
+      ),
+    );
+  }
+
+  Widget _distanceStat(String value, String label) {
+    return Column(
+      children: [
+        Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+        Text(label, style: const TextStyle(color: Colors.white60, fontSize: 11)),
       ],
     );
   }

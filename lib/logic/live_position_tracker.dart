@@ -12,12 +12,14 @@ class LivePosition {
   final double north;
   final double headingDegrees;
   final double tiltDegrees;
+  final double progress; // arc-length meters walked along the route
 
   const LivePosition({
     required this.east,
     required this.north,
     required this.headingDegrees,
     required this.tiltDegrees,
+    required this.progress,
   });
 }
 
@@ -52,7 +54,13 @@ class LivePositionTracker {
   // own - it only becomes a step once it's the *second* spike in a row
   // spaced at a plausible walking cadence. An isolated jerk never gets that
   // second, similarly-timed spike, so it's filtered out for free.
-  static const double _minStepIntervalSeconds = 0.3;
+  //
+  // The minimum matches mapping_screen.dart's proven step cadence exactly
+  // (that detector's only debounce, and the one this project already trusts)
+  // rather than a shorter one: a looser minimum let a single footstep's
+  // accelerometer bounce register as two separate steps, advancing the
+  // tracked position faster than real walking.
+  static const double _minStepIntervalSeconds = 0.7;
   static const double _maxStepIntervalSeconds = 1.2;
 
   static const bool _stepDetectionEnabled = true;
@@ -60,14 +68,33 @@ class LivePositionTracker {
   final List<PathNode> route;
   late final List<double> _distances;
   late final double _totalDistance;
+  double get totalDistance => _totalDistance;
 
   final _controller = StreamController<LivePosition>.broadcast();
   Stream<LivePosition> get positions => _controller.stream;
 
   StreamSubscription? _sub;
   double _progress;
+  double _displayedProgress;
   double _lastPeakTime = 0;
+  double? _lastPoseTime;
   int _consecutivePeaks = 0;
+
+  // Position only advances in discrete stepLengthMeters jumps, the instant a
+  // step is confirmed, so rendering straight from _progress made the line
+  // visibly snap forward once per step instead of gliding. _displayedProgress
+  // eases toward _progress instead of jumping to it, so the walk between
+  // steps still reads as continuous motion. Kept separate from _progress
+  // itself, which stays the immediately-correct value used for the
+  // forward/backward tangent decision at turns.
+  //
+  // The easing is time-based (using actual elapsed seconds between pose
+  // updates), not a fixed fraction applied per update - a fixed-per-update
+  // fraction makes the smoothing rate depend on how often pose events happen
+  // to arrive, and converges most of the way within a fraction of a second,
+  // which visibly caught up in a burst right as each new step landed rather
+  // than gliding evenly across the whole ~0.7-1.2s step interval.
+  static const double _positionSmoothingTimeConstant = 0.55;
 
   // Smoothed separately from the raw heading used for step math: the AR
   // overlay projects points in real 3D, where perspective math amplifies
@@ -86,7 +113,8 @@ class LivePositionTracker {
   double? _smoothedTilt;
 
   LivePositionTracker({required this.route, double startProgress = 0})
-      : _progress = startProgress {
+      : _progress = startProgress,
+        _displayedProgress = startProgress {
     _distances = [0];
     for (var i = 1; i < route.length; i++) {
       final prev = route[i - 1];
@@ -161,7 +189,11 @@ class LivePositionTracker {
       }
     }
 
-    final sample = _sampleAt(_progress);
+    final dt = _lastPoseTime == null ? 1 / 30 : (now - _lastPoseTime!).clamp(0.0, 0.5);
+    _lastPoseTime = now;
+    final positionAlpha = 1 - exp(-dt / _positionSmoothingTimeConstant);
+    _displayedProgress = _lerp(_displayedProgress, _progress, positionAlpha);
+    final sample = _sampleAt(_displayedProgress);
 
     final renderHeadingRad = renderHeadingRaw * pi / 180.0;
     _smoothedSin = _lerp(_smoothedSin, sin(renderHeadingRad), _headingSmoothing);
@@ -174,6 +206,7 @@ class LivePositionTracker {
       north: sample.north,
       headingDegrees: smoothedHeadingDeg,
       tiltDegrees: _smoothedTilt!,
+      progress: _displayedProgress,
     ));
   }
 

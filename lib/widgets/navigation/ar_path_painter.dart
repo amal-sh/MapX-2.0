@@ -108,87 +108,58 @@ class ArPathPainter extends CustomPainter {
       );
     }
 
-    // Draws a line segment between two floor points, clipping it to the
-    // near plane first if either end is behind the camera - instead of
-    // dropping unprojectable points outright, which would otherwise connect
-    // two non-adjacent visible points directly or make the line vanish
-    // outright depending on exactly which points happen to clear the
-    // camera-plane test on a given frame.
-    void drawFloorSegment(
-      double aEast,
-      double aNorth,
-      double bEast,
-      double bNorth,
-      Color glowColor,
-      Color lineColor,
-      double fade,
-    ) {
-      if (fade <= 0.0) return;
-      final zA = zCamAt(aEast, aNorth);
-      final zB = zCamAt(bEast, bNorth);
-      if (zA < nearPlane && zB < nearPlane) return;
-
-      var startEast = aEast, startNorth = aNorth;
-      if (zA < nearPlane) {
-        final t = (nearPlane - zA) / (zB - zA);
-        startEast = aEast + (bEast - aEast) * t;
-        startNorth = aNorth + (bNorth - aNorth) * t;
-      }
-      var endEast = bEast, endNorth = bNorth;
-      if (zB < nearPlane) {
-        final t = (nearPlane - zB) / (zA - zB);
-        endEast = bEast + (aEast - bEast) * t;
-        endNorth = bNorth + (aNorth - bNorth) * t;
-      }
-
-      final pA = project(startEast, startNorth);
-      final pB = project(endEast, endNorth);
-      if (pA == null || pB == null) return;
-
-      // Width falls off with actual camera-space depth (zCam), not screen-
-      // space position relative to a computed horizon line. The horizon
-      // estimate (originY - tan(pitch)*focalLength) blows up toward
-      // infinity as pitch approaches +-90 deg - at a tilt of 19 deg
-      // (pitch=-71 deg) it lands miles off-screen, which used to poison
-      // this ratio into clamping at max thickness for nearly every segment
-      // (the "uniform thick vertical band" seen tilting the phone down).
-      // zCam has no such singularity at any pitch.
-      final avgZCam = ((zA.clamp(nearPlane, double.infinity) +
-              zB.clamp(nearPlane, double.infinity)) /
-          2);
+    // Projects a route point along with how wide the line should be there:
+    // width falls off with actual camera-space depth (zCam), not screen-
+    // space position relative to a computed horizon line. The horizon
+    // estimate (originY - tan(pitch)*focalLength) blows up toward infinity
+    // as pitch approaches +-90 deg - at a tilt of 19 deg (pitch=-71 deg) it
+    // lands miles off-screen, which used to poison a horizon-based ratio
+    // into clamping at max thickness for nearly everything. zCam has no
+    // such singularity at any pitch.
+    ({Offset point, double widthScale})? projectWithWidth(double east, double north, double fade) {
+      final p = project(east, north);
+      if (p == null) return null;
+      final z = zCamAt(east, north).clamp(nearPlane, double.infinity);
       const referenceZCam = 1.0;
-      final depthRatio = (referenceZCam / avgZCam).clamp(0.12, 1.0);
+      final depthRatio = (referenceZCam / z).clamp(0.12, 1.0);
+      return (point: p, widthScale: depthRatio * fade);
+    }
 
-      // A soft, dark, blurred stroke directly under the line - the same
-      // trick used to "ground" a floating UI element with a contact shadow,
-      // just inverted for a bright line on a real floor.
-      //
-      // Butt caps, not round: each recorded route segment (~0.5m apart) is
-      // drawn as its own independent stroke, and a round cap at every
-      // segment joint shows up as a visible bulge once the line is this
-      // wide - worse up close, where each short segment spans more screen
-      // space and spreads those bulges apart into a "string of beads"
-      // instead of hiding them. Butt caps let adjacent segments (which
-      // share an exact endpoint) meet flush.
-      final shadow = Paint()
-        ..color = Colors.black.withValues(alpha: 0.35 * fade)
-        ..strokeCap = StrokeCap.butt
-        ..style = PaintingStyle.stroke
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6)
-        ..strokeWidth = (30.0 * depthRatio).clamp(6.0, 32.0);
-      final glow = Paint()
-        ..color = glowColor.withValues(alpha: glowColor.a * fade)
-        ..strokeCap = StrokeCap.butt
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = (20.0 * depthRatio).clamp(5.0, 22.0);
-      final line = Paint()
-        ..color = lineColor.withValues(alpha: lineColor.a * fade)
-        ..strokeCap = StrokeCap.butt
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = (7.0 * depthRatio).clamp(2.5, 8.0);
-      canvas.drawLine(pA, pB, shadow);
-      canvas.drawLine(pA, pB, glow);
-      canvas.drawLine(pA, pB, line);
+    // Builds one continuous filled ribbon (not a sequence of separately
+    // stroked segments) spanning every point in [points], tapering smoothly
+    // from each point's own widthScale - a single polygon has no per-segment
+    // seams to show, unlike drawing each ~0.5m recorded step as its own
+    // stroke did.
+    Path? buildRibbon(List<({Offset point, double widthScale})> points, double baseHalfWidth) {
+      if (points.length < 2) return null;
+      final left = <Offset>[];
+      final right = <Offset>[];
+      for (var i = 0; i < points.length; i++) {
+        final Offset dir;
+        if (i == 0) {
+          dir = points[1].point - points[0].point;
+        } else if (i == points.length - 1) {
+          dir = points[i].point - points[i - 1].point;
+        } else {
+          // Average of the incoming and outgoing directions, so the ribbon
+          // doesn't kink sharply where the recorded route bends slightly.
+          dir = points[i + 1].point - points[i - 1].point;
+        }
+        final len = dir.distance;
+        final perp = len > 0.0001 ? Offset(-dir.dy / len, dir.dx / len) : const Offset(1, 0);
+        final halfWidth = baseHalfWidth * points[i].widthScale;
+        left.add(points[i].point + perp * halfWidth);
+        right.add(points[i].point - perp * halfWidth);
+      }
+      final path = Path()..moveTo(left.first.dx, left.first.dy);
+      for (final p in left.skip(1)) {
+        path.lineTo(p.dx, p.dy);
+      }
+      for (final p in right.reversed) {
+        path.lineTo(p.dx, p.dy);
+      }
+      path.close();
+      return path;
     }
 
     // Distance-along-path for each route node, used to find the walker's
@@ -233,24 +204,37 @@ class ArPathPainter extends CustomPainter {
       return (remaining / fadeZoneMeters).clamp(0.0, 1.0);
     }
 
-    // 1. Floor-hugging path line from the walker's position to the cutoff.
+    // 1. Floor-hugging path line from the walker's position to the cutoff,
+    // as one continuous ribbon rather than one stroke per recorded step.
     const glowColor = Color(0xFF00E5FF);
     const lineColor = Color(0xFF00E5FF);
 
-    for (var i = nearestIdx; i < route.length - 1; i++) {
+    final visiblePoints = <({Offset point, double widthScale})>[];
+    for (var i = nearestIdx; i < route.length; i++) {
       if (distances[i] > visibleEndDist) break;
-      final a = route[i];
-      final b = route[i + 1];
-      final midDist = (distances[i] + math.min(distances[i + 1], visibleEndDist)) / 2;
-      drawFloorSegment(
-        a.east,
-        a.north,
-        b.east,
-        b.north,
-        glowColor.withValues(alpha: 0.28),
-        lineColor,
-        fadeFor(midDist),
+      final node = route[i];
+      final sample = projectWithWidth(node.east, node.north, fadeFor(distances[i]));
+      if (sample == null) continue; // behind the camera
+      visiblePoints.add(sample);
+    }
+
+    final shadowPath = buildRibbon(visiblePoints, 15.0);
+    final glowPath = buildRibbon(visiblePoints, 10.0);
+    final linePath = buildRibbon(visiblePoints, 3.5);
+    if (shadowPath != null) {
+      canvas.drawPath(
+        shadowPath,
+        Paint()
+          ..color = Colors.black.withValues(alpha: 0.35)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6)
+          ..style = PaintingStyle.fill,
       );
+    }
+    if (glowPath != null) {
+      canvas.drawPath(glowPath, Paint()..color = glowColor.withValues(alpha: 0.28));
+    }
+    if (linePath != null) {
+      canvas.drawPath(linePath, Paint()..color = lineColor);
     }
 
     // 2. Start marker.
