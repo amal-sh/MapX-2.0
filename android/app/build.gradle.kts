@@ -20,8 +20,10 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.mapx"
+        // Distinct from the older mapx prototype project's applicationId
+        // (also com.example.mapx) so both can be installed on the same
+        // device at once instead of overwriting each other.
+        applicationId = "com.example.mapx2"
         // ARCore requires API 24+.
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
