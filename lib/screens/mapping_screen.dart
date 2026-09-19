@@ -10,7 +10,10 @@ import '../models/map_models.dart';
 import '../widgets/path_map_painter.dart';
 
 class MappingScreen extends StatefulWidget {
-  const MappingScreen({super.key});
+  final String mapName;
+  final int floor;
+
+  const MappingScreen({super.key, required this.mapName, required this.floor});
 
   @override
   State<MappingScreen> createState() => _MappingScreenState();
@@ -24,10 +27,16 @@ class _MappingScreenState extends State<MappingScreen> {
   static const double _stepMotionThreshold = 0.4;
   static const double _stepCooldownSeconds = 0.7;
 
+  // Steps aren't recorded for this long after mapping starts or resumes
+  // (Start/Resume, closing the turn or add-marker dialog): the tap that got us
+  // here jostles the phone, and that motion would otherwise count as a step.
+  static const double _resumeGraceSeconds = 0.6;
+
   String _arcoreStatus = 'Checking ARCore support...';
   bool _mapping = false;
-  bool _isStarting = false;
   bool _isTurning = false;
+  bool _isAddingNode = false;
+  bool _isPaused = false;
   bool _isTracking = false;
   bool _isWalking = false;
   
@@ -44,6 +53,10 @@ class _MappingScreenState extends State<MappingScreen> {
   final List<Waypoint> _waypoints = [];
   int _stepCount = 0;
   double _lastStepTime = 0;
+  // The grace period is timed from the next pose event after a resume, so it
+  // works even before the first event of a session has arrived.
+  bool _pendingGrace = false;
+  double _resumeAt = 0;
 
   StreamSubscription? _poseSub;
 
@@ -84,15 +97,6 @@ class _MappingScreenState extends State<MappingScreen> {
 
   Future<void> _startMapping() async {
     setState(() {
-      _isStarting = true;
-    });
-
-    await Future.delayed(const Duration(milliseconds: 1500));
-    if (!mounted) return;
-
-    await _methodChannel.invokeMethod('startSession');
-    setState(() {
-      _isStarting = false;
       _mapping = true;
       _segments.clear();
       _segments.add(PathSegment());
@@ -103,7 +107,22 @@ class _MappingScreenState extends State<MappingScreen> {
       _minFeatures = 1 << 30;
       _isWalking = false;
       _isTurning = false;
+      _isPaused = false;
+      _pendingGrace = true;
     });
+
+    try {
+      await _methodChannel.invokeMethod('startSession');
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      setState(() => _mapping = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message ?? 'Could not start mapping')),
+      );
+      return;
+    }
+    if (!mounted) return;
+
     _poseSub = _poseChannel.receiveBroadcastStream().listen(
       _onPose,
       onError: (Object error) {
@@ -123,9 +142,18 @@ class _MappingScreenState extends State<MappingScreen> {
     final features = map['features'] as int;
 
     final now = (map['timestamp'] as int) / 1e9;
-    
+    if (_pendingGrace) {
+      _resumeAt = now + _resumeGraceSeconds;
+      _pendingGrace = false;
+    }
+
     bool stepDetected = false;
-    if (!_isTurning && motion >= _stepMotionThreshold && (now - _lastStepTime) > _stepCooldownSeconds) {
+    if (!_isTurning &&
+        !_isAddingNode &&
+        !_isPaused &&
+        now >= _resumeAt &&
+        motion >= _stepMotionThreshold &&
+        (now - _lastStepTime) > _stepCooldownSeconds) {
       stepDetected = true;
       _lastStepTime = now;
       _stepCount++;
@@ -218,6 +246,7 @@ class _MappingScreenState extends State<MappingScreen> {
     setState(() {
       _segments.add(PathSegment());
       _isTurning = false;
+      _pendingGrace = true;
     });
   }
 
@@ -227,7 +256,17 @@ class _MappingScreenState extends State<MappingScreen> {
     super.dispose();
   }
 
+  void _togglePause() {
+    setState(() {
+      _isPaused = !_isPaused;
+      if (!_isPaused) _pendingGrace = true;
+    });
+  }
+
   Future<void> _addMarker() async {
+    // Steps aren't recorded while the label dialog is open: tapping and
+    // typing jostles the phone, which would otherwise be counted as walking.
+    setState(() => _isAddingNode = true);
     final TextEditingController controller = TextEditingController();
     final String? label = await showDialog<String>(
       context: context,
@@ -251,11 +290,15 @@ class _MappingScreenState extends State<MappingScreen> {
       ),
     );
 
-    if (label != null && label.isNotEmpty) {
-      setState(() {
+    if (!mounted) return;
+
+    setState(() {
+      _isAddingNode = false;
+      _pendingGrace = true;
+      if (label != null && label.isNotEmpty) {
         _waypoints.add(Waypoint(_stepCount, label));
-      });
-    }
+      }
+    });
   }
 
   Future<void> _saveMap() async {
@@ -266,48 +309,26 @@ class _MappingScreenState extends State<MappingScreen> {
       return;
     }
 
-    final TextEditingController controller = TextEditingController();
-    final String? mapName = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Save Map'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(hintText: 'e.g., Floor 1'),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
+    final prefs = await SharedPreferences.getInstance();
+
+    final mapData = {
+      'segments': _segments.map((s) => s.toJson()).toList(),
+      'waypoints': _waypoints.map((w) => w.toJson()).toList(),
+      'stepCount': _stepCount,
+      'name': widget.mapName,
+      'floor': widget.floor,
+    };
+
+    // A building's floors share its name, so the floor is part of the key.
+    await prefs.setString('map_${widget.mapName}#${widget.floor}', jsonEncode(mapData));
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Map "${widget.mapName}" saved successfully!')),
     );
 
-    if (mapName != null && mapName.isNotEmpty) {
-      final prefs = await SharedPreferences.getInstance();
-      
-      final mapData = {
-        'segments': _segments.map((s) => s.toJson()).toList(),
-        'waypoints': _waypoints.map((w) => w.toJson()).toList(),
-        'stepCount': _stepCount,
-      };
-      
-      await prefs.setString('map_$mapName', jsonEncode(mapData));
-      
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Map "$mapName" saved successfully!')),
-      );
-      
-      // Stop mapping and return to dashboard
-      Navigator.pop(context, true); 
-    }
+    // Stop mapping and return to dashboard
+    Navigator.pop(context, true);
   }
 
   Future<bool> _onWillPop() async {
@@ -347,35 +368,14 @@ class _MappingScreenState extends State<MappingScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Active Mapping'),
-          actions: [
-            if (_mapping)
-              IconButton(
-                icon: const Icon(Icons.save),
-                tooltip: 'Save Map',
-                onPressed: _saveMap,
-              ),
-          ],
+          title: Text(
+            '${widget.mapName} · Floor ${widget.floor}',
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
-        floatingActionButton: _mapping
-            ? Column(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  FloatingActionButton(
-                    onPressed: _registerTurn,
-                    heroTag: 'turn_btn',
-                    child: const Icon(Icons.turn_right),
-                  ),
-                  const SizedBox(height: 16),
-                  FloatingActionButton(
-                    onPressed: _addMarker,
-                    heroTag: 'marker_btn',
-                    child: const Icon(Icons.add_location_alt),
-                  ),
-                ],
-              )
-            : null,
-        body: Padding(
+        body: SafeArea(
+          top: false,
+          child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
             children: [
@@ -385,14 +385,6 @@ class _MappingScreenState extends State<MappingScreen> {
                 style: const TextStyle(fontSize: 14),
               ),
               const SizedBox(height: 16),
-              if (!_mapping)
-                if (_isStarting)
-                  const CircularProgressIndicator()
-                else
-                  ElevatedButton(
-                    onPressed: _startMapping,
-                    child: const Text('Start Mapping'),
-                  ),
               if (_mapping) ...[
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -406,9 +398,11 @@ class _MappingScreenState extends State<MappingScreen> {
                     Text(_isTracking ? 'Tracking OK' : 'Tracking lost'),
                     const SizedBox(width: 16),
                     Text(
-                      _isWalking ? 'Walking' : 'Still',
+                      _isPaused ? 'Paused' : (_isWalking ? 'Walking' : 'Still'),
                       style: TextStyle(
-                        color: _isWalking ? Colors.green : Colors.grey,
+                        color: _isPaused
+                            ? Colors.orange
+                            : (_isWalking ? Colors.green : Colors.grey),
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -444,21 +438,77 @@ class _MappingScreenState extends State<MappingScreen> {
                       fontSize: 13),
                 ),
                 const SizedBox(height: 8),
-                Expanded(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey.shade400),
-                      color: Colors.white,
+              ],
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade400),
+                          color: Colors.white,
+                        ),
+                        child: CustomPaint(
+                          painter: PathMapPainter(_computedNodes, _waypoints),
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
                     ),
-                    child: CustomPaint(
-                      painter: PathMapPainter(_computedNodes, _waypoints),
-                      child: const SizedBox.expand(),
+                    if (_mapping)
+                      Positioned(
+                        right: 12,
+                        bottom: 12,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            FloatingActionButton(
+                              onPressed: _registerTurn,
+                              heroTag: 'turn_btn',
+                              child: const Icon(Icons.turn_right),
+                            ),
+                            const SizedBox(height: 16),
+                            FloatingActionButton(
+                              onPressed: _addMarker,
+                              heroTag: 'marker_btn',
+                              child: const Icon(Icons.add_location_alt),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _mapping ? _togglePause : _startMapping,
+                      icon: Icon(
+                        (_mapping && !_isPaused) ? Icons.pause : Icons.play_arrow,
+                      ),
+                      label: Text(
+                        !_mapping
+                            ? 'Start Mapping'
+                            : _isPaused
+                                ? 'Resume Mapping'
+                                : 'Pause Mapping',
+                      ),
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _mapping ? _saveMap : null,
+                      icon: const Icon(Icons.save),
+                      label: const Text('Save Map'),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
+        ),
         ),
       ),
     );

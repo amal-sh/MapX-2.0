@@ -30,6 +30,9 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   Waypoint? _startLocation;
   Waypoint? _destination;
   bool _isArMode = false;
+  // True when the AR view uses ARCore (floor detection); false for the
+  // sensor-only mode over a plain camera preview.
+  bool _useArCore = true;
   static const platform = MethodChannel('mapx/arcore');
 
   late final AnimationController _pulseController;
@@ -153,7 +156,20 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     }
   }
 
-  Future<void> _startArNavigation() async {
+  // The line is drawn once there's something to anchor it to: an ARCore floor
+  // plane, or immediately in sensor-only mode (assumed camera height).
+  bool get _arReady => !_useArCore || _isFloorDetected;
+
+  bool get _canStartNavigation =>
+      _startLocation != null && _destination != null && (_routeNodes?.length ?? 0) >= 2;
+
+  Future<void> _startArNavigation() => _startNavigation(useArCore: true);
+
+  /// The same AR line, but sensor-only over a plain camera preview - no
+  /// ARCore session, so it works where ARCore can't find a floor.
+  Future<void> _startSensorArNavigation() => _startNavigation(useArCore: false);
+
+  Future<void> _startNavigation({required bool useArCore}) async {
     final route = _routeNodes;
     if (route == null || route.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -164,11 +180,11 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
     try {
       await platform.invokeMethod('startSession');
-      await platform.invokeMethod('startArNavigation');
+      await platform.invokeMethod(useArCore ? 'startArNavigation' : 'startCameraPreview');
     } on PlatformException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message ?? 'Could not start AR')),
+          SnackBar(content: Text(e.message ?? 'Could not start navigation')),
         );
       }
       return;
@@ -206,7 +222,12 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     });
     _tracker!.start();
 
-    if (mounted) setState(() => _isArMode = true);
+    if (mounted) {
+      setState(() {
+        _useArCore = useArCore;
+        _isArMode = true;
+      });
+    }
   }
 
   ({String title, String subtitle, IconData icon}) get _currentGuidance {
@@ -240,7 +261,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     );
   }
 
-  Future<void> _stopArNavigation() async {
+  Future<void> _stopNavigation() async {
     _badgeTimer?.cancel();
     _isFloorDetected = false;
     _showFloorAnchoredBadge = false;
@@ -249,7 +270,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _tracker?.dispose();
     _tracker = null;
     try {
-      await platform.invokeMethod('stopArNavigation');
+      await platform.invokeMethod(_useArCore ? 'stopArNavigation' : 'stopCameraPreview');
     } catch (e) {
       debugPrint("AR Error: $e");
     }
@@ -265,7 +286,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         body: Stack(
           children: [
             // Glowing route line anchored to the real floor
-            if (_isFloorDetected)
+            if (_arReady)
               AnimatedBuilder(
                 animation: _pulseController,
                 builder: (context, _) => CustomPaint(
@@ -287,24 +308,24 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
               ),
 
             // Scanning HUD loader while ARCore detects floor plane
-            if (!_isFloorDetected)
+            if (_useArCore && !_isFloorDetected)
               ArWorldScannerOverlay(
-                onCancel: _stopArNavigation,
+                onCancel: _stopNavigation,
               ),
 
             // Back button when in AR navigation mode
-            if (_isFloorDetected)
+            if (_arReady)
               Positioned(
                 top: 50,
                 left: 20,
                 child: IconButton(
                   icon: const Icon(Icons.arrow_back, color: Colors.white, size: 30),
-                  onPressed: _stopArNavigation,
+                  onPressed: _stopNavigation,
                 ),
               ),
 
             // Real-time floor height and orientation HUD
-            if (_isFloorDetected)
+            if (_useArCore && _isFloorDetected)
               Positioned(
                 top: 50,
                 right: 20,
@@ -369,7 +390,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   ),
                 ),
               ),
-            if (_isFloorDetected) ...[
+            if (_arReady) ...[
               Positioned(
                 top: MediaQuery.of(context).padding.top + 100,
                 left: 16,
@@ -397,9 +418,9 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         title: Text(widget.mapName),
         actions: [
           IconButton(
-            icon: const Icon(Icons.view_in_ar),
-            tooltip: 'Start AR Navigation',
-            onPressed: _startArNavigation,
+            icon: const Icon(Icons.videocam),
+            tooltip: 'AR Navigation (without ARCore)',
+            onPressed: _startSensorArNavigation,
           )
         ],
       ),
@@ -477,9 +498,29 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.all(8),
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                   color: Colors.white,
-                  child: const Text('Pinch to zoom, drag to pan', style: TextStyle(color: Colors.grey)),
+                  child: SafeArea(
+                    top: false,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('Pinch to zoom, drag to pan', style: TextStyle(color: Colors.grey)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _canStartNavigation ? _startArNavigation : null,
+                            icon: const Icon(Icons.view_in_ar),
+                            label: const Text('Start Navigation'),
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 )
               ],
             ),

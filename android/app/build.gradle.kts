@@ -44,6 +44,10 @@ dependencies {
     implementation("com.google.ar:core:1.56.0")
     // Sceneview for 3D AR rendering
     implementation("io.github.sceneview:arsceneview:0.10.0")
+    // Plain camera preview for the sensor-only (non-ARCore) AR navigation mode
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
 }
 
 flutter {

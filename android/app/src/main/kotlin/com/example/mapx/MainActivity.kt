@@ -3,11 +3,17 @@ package com.example.mapx
 import android.Manifest
 import android.content.pm.PackageManager
 import android.hardware.Sensor
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Handler
 import android.os.Looper
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.ar.core.ArCoreApk
@@ -101,6 +107,14 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                         stopArNavigationMode()
                         result.success(null)
                     }
+                    "startCameraPreview" -> {
+                        startCameraPreviewMode()
+                        result.success(null)
+                    }
+                    "stopCameraPreview" -> {
+                        stopCameraPreviewMode()
+                        result.success(null)
+                    }
                     "startSession" -> {
                         startArSessionFlow()
                         result.success(null)
@@ -150,7 +164,12 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
         ) {
             setupArSession()
+            if (pendingCameraPreview) {
+                pendingCameraPreview = false
+                startCameraPreviewMode()
+            }
         } else {
+            pendingCameraPreview = false
             eventSink?.error("PERMISSION_DENIED", "Camera permission is required for AR tracking", null)
         }
     }
@@ -158,6 +177,10 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private fun setupArSession() {
         // MAPPING / NAV PHASE: Sensors drive the live position & heading
         setupSensors()
+        // startSession is called once per navigation/mapping run; without this
+        // each call would stack another 30fps loop on top of the running one.
+        if (poseLoopRunning) return
+        poseLoopRunning = true
         mainHandler.postDelayed(object : Runnable {
             override fun run() {
                 val data = mapOf(
@@ -177,12 +200,94 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 eventSink?.success(data)
                 if (sensorsRegistered) {
                     mainHandler.postDelayed(this, 33) // ~30fps
+                } else {
+                    poseLoopRunning = false
                 }
             }
         }, 33)
     }
 
     private var arSceneView: ArSceneView? = null
+    private var poseLoopRunning = false
+
+    // Sensor-only AR navigation: a plain CameraX preview behind the Flutter
+    // overlay, with no ARCore session (so no floor detection or SLAM). The
+    // line is projected from sensor heading/tilt and an assumed camera height.
+    private var cameraPreviewView: PreviewView? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var pendingCameraPreview = false
+
+    private fun startCameraPreviewMode() {
+        if (cameraPreviewView != null) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            // startSession has already asked; resume once it's granted.
+            pendingCameraPreview = true
+            return
+        }
+
+        floorDetected = false
+        arTrackingState = "NONE"
+        computeBackCameraVerticalFov()?.let { cameraFovY = it }
+
+        val view = PreviewView(this).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+        cameraPreviewView = view
+        findViewById<android.view.ViewGroup>(android.R.id.content).addView(
+            view, 0,
+            android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            // Stopped again before the provider was ready.
+            if (cameraPreviewView !== view) return@addListener
+            try {
+                val provider = providerFuture.get()
+                cameraProvider = provider
+                val preview = Preview.Builder().build()
+                preview.setSurfaceProvider(view.surfaceProvider)
+                provider.unbindAll()
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+            } catch (e: Exception) {
+                eventSink?.error("CAMERA_FAILED", e.message ?: "Could not open camera", null)
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun stopCameraPreviewMode() {
+        pendingCameraPreview = false
+        cameraProvider?.unbindAll()
+        cameraProvider = null
+        cameraPreviewView?.let {
+            findViewById<android.view.ViewGroup>(android.R.id.content).removeView(it)
+        }
+        cameraPreviewView = null
+    }
+
+    // Vertical FOV of the portrait preview = the sensor's long side, since
+    // FILL_CENTER on a tall screen only crops the width.
+    private fun computeBackCameraVerticalFov(): Float? {
+        try {
+            val manager = getSystemService(CAMERA_SERVICE) as CameraManager
+            for (id in manager.cameraIdList) {
+                val c = manager.getCameraCharacteristics(id)
+                if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
+                val size = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: continue
+                val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: continue
+                val longSide = maxOf(size.width, size.height)
+                val fov = (2.0 * Math.atan((longSide / (2.0f * focal)).toDouble()) * 180.0 / Math.PI).toFloat()
+                if (fov in 40.0f..90.0f) return fov
+            }
+        } catch (_: Exception) {}
+        return null
+    }
 
     private fun stopArNavigationMode() {
         floorDetected = false
