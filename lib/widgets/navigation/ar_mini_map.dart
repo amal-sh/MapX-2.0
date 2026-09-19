@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../../models/map_models.dart';
 import '../../logic/route_segment_manager.dart';
@@ -47,10 +48,10 @@ class _ArMiniMapState extends State<ArMiniMap> {
       width: _isExpanded ? 154 : 44,
       height: _isExpanded ? 154 : 44,
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withValues(alpha: _isExpanded ? 0.82 : 0.88),
+        color: Colors.black.withValues(alpha: _isExpanded ? 0.85 : 0.90),
         borderRadius: BorderRadius.circular(_isExpanded ? 18 : 22),
         border: Border.all(
-          color: const Color(0xFF00E5FF).withValues(alpha: _isExpanded ? 0.45 : 0.70),
+          color: Colors.white24,
           width: 1.2,
         ),
         boxShadow: [
@@ -59,11 +60,6 @@ class _ArMiniMapState extends State<ArMiniMap> {
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
-          if (!_isExpanded)
-            BoxShadow(
-              color: const Color(0xFF00E5FF).withValues(alpha: 0.25),
-              blurRadius: 8,
-            ),
         ],
       ),
       child: Material(
@@ -120,15 +116,15 @@ class _ArMiniMapState extends State<ArMiniMap> {
                                     child: const Text(
                                       'MAP',
                                       style: TextStyle(
-                                        color: Color(0xFF00E5FF),
+                                        color: Colors.white,
                                         fontSize: 9,
-                                        fontWeight: FontWeight.w900,
+                                        fontWeight: FontWeight.w800,
                                         letterSpacing: 0.8,
                                       ),
                                     ),
                                   ),
                                   Icon(
-                                    Icons.unfold_less_rounded,
+                                    CupertinoIcons.chevron_down,
                                     size: 14,
                                     color: Colors.white.withValues(alpha: 0.75),
                                   ),
@@ -165,8 +161,8 @@ class _ArMiniMapState extends State<ArMiniMap> {
                         height: 44,
                         child: Center(
                           child: Icon(
-                            Icons.map_rounded,
-                            color: const Color(0xFF00E5FF).withValues(alpha: 0.9),
+                            CupertinoIcons.map_fill,
+                            color: Colors.white.withValues(alpha: 0.9),
                             size: 20,
                           ),
                         ),
@@ -300,25 +296,25 @@ class _MiniMapPainter extends CustomPainter {
     canvas.drawPath(
       revealedPath,
       Paint()
-        ..color = const Color(0xFF00E5FF).withValues(alpha: 0.35)
+        ..color = Colors.white.withValues(alpha: 0.30)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 4.0
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
+        ..strokeWidth = 3.5
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0),
     );
 
     // Active revealed path line
     canvas.drawPath(
       revealedPath,
       Paint()
-        ..color = const Color(0xFF00E5FF)
+        ..color = Colors.white
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5
+        ..strokeWidth = 2.0
         ..strokeCap = StrokeCap.round,
     );
 
     // 5. Draw Turn Points (Junction Markers)
     final turnPaint = Paint()
-      ..color = Colors.amber
+      ..color = const Color(0xFFD4D4D8)
       ..style = PaintingStyle.fill;
     for (final tp in turnPoints) {
       if (tp.nodeIndex < route.length) {
@@ -329,12 +325,12 @@ class _MiniMapPainter extends CustomPainter {
 
     // 6. Draw Start & Destination Markers
     final startPt = toScreen(route.first.east, route.first.north);
-    canvas.drawCircle(startPt, 4.0, Paint()..color = const Color(0xFF10B981));
-    canvas.drawCircle(startPt, 2.0, Paint()..color = Colors.white);
+    canvas.drawCircle(startPt, 4.0, Paint()..color = Colors.white);
+    canvas.drawCircle(startPt, 2.0, Paint()..color = Colors.black);
 
     final destPt = toScreen(route.last.east, route.last.north);
-    canvas.drawCircle(destPt, 4.0, Paint()..color = const Color(0xFFEF4444));
-    canvas.drawCircle(destPt, 2.0, Paint()..color = Colors.white);
+    canvas.drawCircle(destPt, 4.0, Paint()..color = Colors.white);
+    canvas.drawCircle(destPt, 2.0, Paint()..color = const Color(0xFF52525B));
 
     // 7. Draw Live User Position and Heading Indicator
     final userPos = toScreen(userEast, userNorth);
@@ -363,8 +359,8 @@ class _MiniMapPainter extends CustomPainter {
       Paint()
         ..shader = RadialGradient(
           colors: [
-            const Color(0xFF00E5FF).withValues(alpha: 0.50),
-            const Color(0xFF00E5FF).withValues(alpha: 0.0),
+            Colors.white.withValues(alpha: 0.40),
+            Colors.white.withValues(alpha: 0.0),
           ],
         ).createShader(Rect.fromCircle(center: userPos, radius: coneLength)),
     );
@@ -377,8 +373,8 @@ class _MiniMapPainter extends CustomPainter {
     );
     canvas.drawCircle(
       userPos,
-      3.0,
-      Paint()..color = const Color(0xFF00E5FF),
+      2.5,
+      Paint()..color = Colors.black,
     );
   }
 

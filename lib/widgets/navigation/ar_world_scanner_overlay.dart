@@ -1,7 +1,9 @@
 import 'dart:math' as math;
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:lottie/lottie.dart';
 
-/// A sleek, futuristic AR scanning overlay shown while ARCore detects the
+/// A sleek monochromatic AR scanning overlay shown while ARCore detects the
 /// horizontal floor plane and anchors the 3D world space.
 class ArWorldScannerOverlay extends StatefulWidget {
   final VoidCallback? onCancel;
@@ -52,10 +54,10 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A).withValues(alpha: 0.85),
+                      color: Colors.black.withValues(alpha: 0.85),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: const Color(0xFF38BDF8).withValues(alpha: 0.4),
+                        color: Colors.white24,
                         width: 1.2,
                       ),
                     ),
@@ -67,7 +69,7 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                           height: 10,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Color(0xFF38BDF8),
+                            color: Colors.white,
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -76,7 +78,7 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                               ? 'LOCKING FLOOR ${(widget.floorConfidence * 100).toInt()}%'
                               : 'ARCORE SPATIAL SCAN',
                           style: const TextStyle(
-                            color: Color(0xFF38BDF8),
+                            color: Colors.white,
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
                             letterSpacing: 1.0,
@@ -88,7 +90,7 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                   const Spacer(),
                   if (widget.onCancel != null)
                     IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white70),
+                      icon: const Icon(CupertinoIcons.xmark, color: Colors.white70),
                       onPressed: widget.onCancel,
                       tooltip: 'Exit AR Mode',
                     ),
@@ -98,15 +100,39 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
 
             const Spacer(),
 
-            // Center Scanning Reticle
-            AnimatedBuilder(
-              animation: _scanController,
-              builder: (context, child) {
-                return CustomPaint(
-                  size: const Size(180, 180),
-                  painter: _ScannerReticlePainter(progress: _scanController.value),
-                );
-              },
+            // Center Scanning Animation: Mobile surface scanning
+            Center(
+              child: Container(
+                width: 220,
+                height: 220,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      Colors.black.withValues(alpha: 0.4),
+                      Colors.black.withValues(alpha: 0.0),
+                    ],
+                  ),
+                ),
+                child: Lottie.asset(
+                  'assets/animations/mobile_surface_scanning.json',
+                  width: 220,
+                  height: 220,
+                  fit: BoxFit.contain,
+                  repeat: true,
+                  errorBuilder: (context, error, stackTrace) {
+                    return AnimatedBuilder(
+                      animation: _scanController,
+                      builder: (context, child) {
+                        return CustomPaint(
+                          size: const Size(180, 180),
+                          painter: _ScannerReticlePainter(progress: _scanController.value),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
             ),
 
             const SizedBox(height: 24),
@@ -117,15 +143,15 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A).withValues(alpha: 0.88),
+                  color: Colors.black.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(18),
                   border: Border.all(
-                    color: const Color(0xFF38BDF8).withValues(alpha: 0.3),
+                    color: Colors.white24,
                     width: 1.2,
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: const Color(0xFF38BDF8).withValues(alpha: 0.15),
+                      color: Colors.black.withValues(alpha: 0.4),
                       blurRadius: 16,
                       spreadRadius: 2,
                     ),
@@ -138,8 +164,8 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         const Icon(
-                          Icons.radar,
-                          color: Color(0xFF38BDF8),
+                          CupertinoIcons.scope,
+                          color: Colors.white,
                           size: 20,
                         ),
                         const SizedBox(width: 8),
@@ -162,7 +188,7 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                       'Point camera towards the floor and move slowly. Navigation objects will appear once the floor is locked.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: Color(0xFF94A3B8),
+                        color: Color(0xFFA1A1AA),
                         fontSize: 12.5,
                         height: 1.3,
                       ),
@@ -174,7 +200,7 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                         child: LinearProgressIndicator(
                           value: widget.floorConfidence.clamp(0.0, 1.0),
                           backgroundColor: Colors.white12,
-                          valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF38BDF8)),
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
                           minHeight: 4,
                         ),
                       ),
@@ -208,7 +234,7 @@ class _ScannerReticlePainter extends CustomPainter {
       final alpha = (1.0 - p).clamp(0.0, 1.0) * 0.45;
 
       final circlePaint = Paint()
-        ..color = const Color(0xFF38BDF8).withValues(alpha: alpha)
+        ..color = Colors.white.withValues(alpha: alpha)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5;
 
@@ -224,8 +250,8 @@ class _ScannerReticlePainter extends CustomPainter {
         startAngle: 0.0,
         endAngle: sweepAngle,
         colors: [
-          const Color(0xFF38BDF8).withValues(alpha: 0.0),
-          const Color(0xFF38BDF8).withValues(alpha: 0.7),
+          Colors.white.withValues(alpha: 0.0),
+          Colors.white.withValues(alpha: 0.7),
         ],
         transform: GradientRotation(startAngle),
       ).createShader(Rect.fromCircle(center: center, radius: maxRadius * 0.6))
@@ -242,7 +268,7 @@ class _ScannerReticlePainter extends CustomPainter {
 
     // Corner brackets
     final bracketPaint = Paint()
-      ..color = const Color(0xFF38BDF8)
+      ..color = Colors.white
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.round;
@@ -268,7 +294,7 @@ class _ScannerReticlePainter extends CustomPainter {
 
     // Center dot
     final centerDotPaint = Paint()
-      ..color = const Color(0xFF38BDF8)
+      ..color = Colors.white
       ..style = PaintingStyle.fill;
     canvas.drawCircle(center, 3.5, centerDotPaint);
   }

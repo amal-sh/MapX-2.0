@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -368,9 +369,9 @@ class _MappingScreenState extends State<MappingScreen> {
               onPressed: () => Navigator.pop(context, false),
               child: const Text('Cancel'),
             ),
-            TextButton(
+              TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Discard', style: TextStyle(color: Colors.red)),
+              child: const Text('Discard', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
             ),
           ],
         ),
@@ -393,6 +394,15 @@ class _MappingScreenState extends State<MappingScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
+          leading: CupertinoNavigationBarBackButton(
+            color: Colors.black,
+            onPressed: () async {
+              final shouldPop = await _onWillPop();
+              if (shouldPop && context.mounted) {
+                Navigator.of(context).pop();
+              }
+            },
+          ),
           title: Text(
             '${widget.mapName} · Floor ${widget.floor}',
             overflow: TextOverflow.ellipsis,
@@ -407,41 +417,55 @@ class _MappingScreenState extends State<MappingScreen> {
               Text(
                 _arcoreStatus,
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 14),
+                style: const TextStyle(fontSize: 13, color: Color(0xFF71717A)),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
               if (_mapping) ...[
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      _isTracking ? Icons.check_circle : Icons.error,
-                      color: _isTracking ? Colors.green : Colors.orange,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(_isTracking ? 'Tracking OK' : 'Tracking lost'),
-                    const SizedBox(width: 16),
-                    Text(
-                      _isPaused ? 'Paused' : (_isWalking ? 'Walking' : 'Still'),
-                      style: TextStyle(
-                        color: _isPaused
-                            ? Colors.orange
-                            : (_isWalking ? Colors.green : Colors.grey),
-                        fontWeight: FontWeight.bold,
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F4F5),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE4E4E7)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _isTracking ? CupertinoIcons.checkmark_circle_fill : CupertinoIcons.exclamationmark_circle_fill,
+                        color: _isTracking ? Colors.black : const Color(0xFF71717A),
+                        size: 16,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      Text(
+                        _isTracking ? 'Tracking OK' : 'Tracking lost',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.black),
+                      ),
+                      const SizedBox(width: 14),
+                      Container(width: 1, height: 14, color: const Color(0xFFD4D4D8)),
+                      const SizedBox(width: 14),
+                      Text(
+                        _isPaused ? 'Paused' : (_isWalking ? 'Walking' : 'Still'),
+                        style: TextStyle(
+                          color: _isPaused
+                              ? const Color(0xFF71717A)
+                              : (_isWalking ? Colors.black : const Color(0xFFA1A1AA)),
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 10),
                 Text(
                   'Steps: $_stepCount   Walls: ${_recordedWalls.length}\n'
-                  'heading: ${_heading.toStringAsFixed(0)}°   '
-                  'tilt: ${_tilt.toStringAsFixed(0)}°\n'
-                  'motion: ${_motion.toStringAsFixed(2)} (Peak: ${_peakMotion.toStringAsFixed(2)})\n'
-                  'features: $_features (min '
+                  'Heading: ${_heading.toStringAsFixed(0)}°   '
+                  'Tilt: ${_tilt.toStringAsFixed(0)}°\n'
+                  'Motion: ${_motion.toStringAsFixed(2)} (Peak: ${_peakMotion.toStringAsFixed(2)})\n'
+                  'Features: $_features (min '
                   '${_minFeatures == 1 << 30 ? "-" : _minFeatures})',
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                  style: const TextStyle(fontSize: 12, height: 1.4, color: Color(0xFF3F3F46)),
                   textAlign: TextAlign.center,
                 ),
                 if (_tilt < _minUprightTilt)
@@ -449,53 +473,57 @@ class _MappingScreenState extends State<MappingScreen> {
                     padding: EdgeInsets.only(top: 6),
                     child: Text(
                       'Hold the phone upright - heading is unreliable',
-                      style: TextStyle(color: Colors.red, fontSize: 13),
+                      style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600, fontSize: 12),
                     ),
                   ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 Text(
-                  'nodes: ${_computedNodes.length}   '
-                  'path: ${_pathLength.toStringAsFixed(2)}m   '
-                  'direct: ${_directDistance.toStringAsFixed(2)}m',
+                  'Nodes: ${_computedNodes.length}   '
+                  'Path: ${_pathLength.toStringAsFixed(2)}m   '
+                  'Direct: ${_directDistance.toStringAsFixed(2)}m',
                   style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontFamily: 'monospace',
-                      fontSize: 13),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      color: Colors.black),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 10),
               ],
               Expanded(
                 child: Stack(
                   children: [
                     Positioned.fill(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade400),
-                          color: Colors.white,
-                        ),
-                        child: CustomPaint(
-                          painter: PathMapPainter(_computedNodes, _waypoints, walls: _recordedWalls),
-                          child: const SizedBox.expand(),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            border: Border.all(color: const Color(0xFFE4E4E7)),
+                            borderRadius: BorderRadius.circular(16),
+                            color: Colors.white,
+                          ),
+                          child: CustomPaint(
+                            painter: PathMapPainter(_computedNodes, _waypoints, walls: _recordedWalls),
+                            child: const SizedBox.expand(),
+                          ),
                         ),
                       ),
                     ),
                     if (_mapping)
                       Positioned(
-                        right: 12,
-                        bottom: 12,
+                        right: 14,
+                        bottom: 14,
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            FloatingActionButton(
+                            FloatingActionButton.small(
                               onPressed: _registerTurn,
                               heroTag: 'turn_btn',
-                              child: const Icon(Icons.turn_right),
+                              child: const Icon(CupertinoIcons.arrow_turn_up_right, size: 20),
                             ),
-                            const SizedBox(height: 16),
-                            FloatingActionButton(
+                            const SizedBox(height: 12),
+                            FloatingActionButton.small(
                               onPressed: _addMarker,
                               heroTag: 'marker_btn',
-                              child: const Icon(Icons.add_location_alt),
+                              child: const Icon(CupertinoIcons.placemark, size: 20),
                             ),
                           ],
                         ),
@@ -510,7 +538,8 @@ class _MappingScreenState extends State<MappingScreen> {
                     child: ElevatedButton.icon(
                       onPressed: _mapping ? _togglePause : _startMapping,
                       icon: Icon(
-                        (_mapping && !_isPaused) ? Icons.pause : Icons.play_arrow,
+                        (_mapping && !_isPaused) ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
+                        size: 18,
                       ),
                       label: Text(
                         !_mapping
@@ -523,9 +552,9 @@ class _MappingScreenState extends State<MappingScreen> {
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: ElevatedButton.icon(
+                    child: OutlinedButton.icon(
                       onPressed: _mapping ? _saveMap : null,
-                      icon: const Icon(Icons.save),
+                      icon: const Icon(CupertinoIcons.floppy_disk, size: 18),
                       label: const Text('Save Map'),
                     ),
                   ),

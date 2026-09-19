@@ -47,7 +47,7 @@ class PathMapPainter extends CustomPainter {
 
     // Draw walls as solid dark slate boundary lines
     final wallPaint = Paint()
-      ..color = const Color(0xFF334155)
+      ..color = const Color(0xFF09090B)
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeWidth = 4.5;
@@ -65,9 +65,9 @@ class PathMapPainter extends CustomPainter {
     canvas.drawPath(
       path,
       Paint()
-        ..color = Colors.teal
+        ..color = const Color(0xFF71717A)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5,
+        ..strokeWidth = 2.0,
     );
 
     if (routeNodes != null && routeNodes!.isNotEmpty) {
@@ -81,34 +81,39 @@ class PathMapPainter extends CustomPainter {
       canvas.drawPath(
         routePath,
         Paint()
-          ..color = Colors.orange
+          ..color = Colors.black
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round
-          ..strokeWidth = 6.0, // Thicker line for the route
+          ..strokeWidth = 5.5,
       );
     }
 
-    final dot = Paint()..color = Colors.teal.shade700;
+    final dot = Paint()..color = const Color(0xFF27272A);
     for (final n in nodes) {
-      canvas.drawCircle(toScreen(n.east, n.north), 3, dot);
+      canvas.drawCircle(toScreen(n.east, n.north), 2.5, dot);
     }
 
-    final markerPaint = Paint()..color = Colors.blue;
     for (final wp in waypoints) {
       if (wp.globalStepIndex < nodes.length) {
         final node = nodes[wp.globalStepIndex];
         final pos = toScreen(node.east, node.north);
-        canvas.drawCircle(pos, 8, markerPaint);
-        _paintLabel(canvas, wp.label, pos + const Offset(10, -10), Colors.blue.shade900);
+        canvas.drawCircle(pos, 8, Paint()..color = Colors.black);
+        canvas.drawCircle(pos, 4, Paint()..color = Colors.white);
+        _paintLabel(canvas, wp.label, pos + const Offset(10, -10), Colors.black);
       }
     }
 
-    canvas.drawCircle(toScreen(nodes.first.east, nodes.first.north), 6,
-        Paint()..color = Colors.green);
+    // Start node: High contrast concentric indicator
+    final startPos = toScreen(nodes.first.east, nodes.first.north);
+    canvas.drawCircle(startPos, 7, Paint()..color = Colors.black);
+    canvas.drawCircle(startPos, 4, Paint()..color = Colors.white);
+    canvas.drawCircle(startPos, 2, Paint()..color = Colors.black);
+
     if (nodes.length > 1) {
-      canvas.drawCircle(toScreen(nodes.last.east, nodes.last.north), 6,
-          Paint()..color = Colors.deepOrange);
+      final endPos = toScreen(nodes.last.east, nodes.last.north);
+      canvas.drawCircle(endPos, 7, Paint()..color = Colors.black);
+      canvas.drawCircle(endPos, 3, Paint()..color = Colors.white);
     }
 
     _paintNorthArrow(canvas, size);
@@ -120,7 +125,7 @@ class PathMapPainter extends CustomPainter {
     final halfNorth = size.height / 2 / scale;
     final step = (max(halfEast, halfNorth) * 2) > 20 ? 5.0 : 1.0;
     final paint = Paint()
-      ..color = Colors.grey.shade300
+      ..color = const Color(0xFFE4E4E7)
       ..strokeWidth = 1;
 
     for (var e = ((centreEast - halfEast) / step).ceil() * step;
@@ -137,26 +142,30 @@ class PathMapPainter extends CustomPainter {
     }
 
     _paintLabel(canvas, '${step.toStringAsFixed(0)} m grid',
-        Offset(6, size.height - 18), Colors.grey.shade600);
+        Offset(6, size.height - 18), const Color(0xFF71717A));
   }
 
   void _paintNorthArrow(Canvas canvas, Size size) {
     final top = Offset(size.width - 20, 12);
     final bottom = Offset(size.width - 20, 34);
     final paint = Paint()
-      ..color = Colors.black54
+      ..color = Colors.black
       ..strokeWidth = 2;
     canvas.drawLine(bottom, top, paint);
     canvas.drawLine(top, top + const Offset(-5, 7), paint);
     canvas.drawLine(top, top + const Offset(5, 7), paint);
-    _paintLabel(canvas, 'N', Offset(size.width - 25, 36), Colors.black54);
+    _paintLabel(canvas, 'N', Offset(size.width - 25, 36), Colors.black);
   }
 
   void _paintLabel(Canvas canvas, String text, Offset at, Color color) {
     final painter = TextPainter(
       text: TextSpan(
         text: text,
-        style: TextStyle(color: color, fontSize: 11),
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();

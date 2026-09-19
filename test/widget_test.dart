@@ -13,7 +13,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('MapX Dashboard'), findsOneWidget);
+    expect(find.byType(Image), findsOneWidget);
   });
 
   test('ArPathPainter floor-anchored direction arrows paint test', () {

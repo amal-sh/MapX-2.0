@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 /// On-screen high-visibility guidance prompt displayed when the user faces away
@@ -34,7 +35,7 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
 
-    _slideAnimation = Tween<double>(begin: -6.0, end: 6.0).animate(
+    _slideAnimation = Tween<double>(begin: 0.0, end: 8.0).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
   }
@@ -60,21 +61,16 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
             margin: const EdgeInsets.symmetric(horizontal: 28),
             padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
             decoration: BoxDecoration(
-              color: const Color(0xFF0F172A).withValues(alpha: 0.92),
+              color: Colors.black.withValues(alpha: 0.94),
               borderRadius: BorderRadius.circular(24),
               border: Border.all(
-                color: const Color(0xFF00E5FF).withValues(alpha: 0.85),
-                width: 1.8,
+                color: Colors.white,
+                width: 1.4,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF00E5FF).withValues(alpha: 0.35 * _pulseAnimation.value),
-                  blurRadius: 24,
-                  spreadRadius: 2,
-                ),
-                BoxShadow(
                   color: Colors.black.withValues(alpha: 0.5),
-                  blurRadius: 16,
+                  blurRadius: 20,
                   offset: const Offset(0, 6),
                 ),
               ],
@@ -92,9 +88,9 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                         child: Transform.scale(
                           scale: _pulseAnimation.value,
                           child: const Icon(
-                            Icons.arrow_back_rounded,
-                            color: Color(0xFF00E5FF),
-                            size: 34,
+                            CupertinoIcons.arrow_left,
+                            color: Colors.white,
+                            size: 28,
                           ),
                         ),
                       ),
@@ -107,16 +103,16 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                           isLeft ? 'TURN LEFT ${angle.toStringAsFixed(0)}°' : 'TURN RIGHT ${angle.toStringAsFixed(0)}°',
                           style: const TextStyle(
                             color: Colors.white,
-                            fontWeight: FontWeight.w900,
-                            fontSize: 18,
-                            letterSpacing: 0.8,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 17,
+                            letterSpacing: 0.5,
                           ),
                         ),
                         const SizedBox(height: 2),
                         const Text(
                           'Face towards path to continue',
                           style: TextStyle(
-                            color: Color(0xFF94A3B8),
+                            color: Color(0xFFA1A1AA),
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
                           ),
@@ -130,9 +126,9 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                         child: Transform.scale(
                           scale: _pulseAnimation.value,
                           child: const Icon(
-                            Icons.arrow_forward_rounded,
-                            color: Color(0xFF00E5FF),
-                            size: 34,
+                            CupertinoIcons.arrow_right,
+                            color: Colors.white,
+                            size: 28,
                           ),
                         ),
                       ),
@@ -150,14 +146,7 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                       alignment: isLeft ? Alignment.centerLeft : Alignment.centerRight,
                       child: Container(
                         width: (180 * (angle / 180.0)).clamp(20.0, 180.0),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              const Color(0xFF00E5FF),
-                              isLeft ? Colors.cyanAccent : Colors.tealAccent,
-                            ],
-                          ),
-                        ),
+                        color: Colors.white,
                       ),
                     ),
                   ),

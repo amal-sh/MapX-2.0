@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mapx/logic/depth_occlusion_manager.dart';
@@ -6,7 +7,9 @@ import 'package:mapx/logic/route_segment_manager.dart';
 import 'package:mapx/models/map_models.dart';
 import 'package:mapx/widgets/navigation/ar_mini_map.dart';
 import 'package:mapx/widgets/navigation/ar_path_painter.dart';
+import 'package:mapx/widgets/navigation/ar_world_scanner_overlay.dart';
 import 'package:mapx/widgets/navigation/off_path_direction_prompt.dart';
+import 'package:lottie/lottie.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -175,7 +178,7 @@ void main() {
 
       expect(find.text('TURN LEFT 45°'), findsOneWidget);
       expect(find.text('Face towards path to continue'), findsOneWidget);
-      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+      expect(find.byIcon(CupertinoIcons.arrow_left), findsOneWidget);
     });
 
     testWidgets('ArMiniMap renders and toggles between expanded and collapsed states', (tester) async {
@@ -208,7 +211,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Collapsed: shows map icon
-      expect(find.byIcon(Icons.map_rounded), findsOneWidget);
+      expect(find.byIcon(CupertinoIcons.map_fill), findsOneWidget);
       expect(find.text('MAP'), findsNothing);
 
       // Tap again to expand
@@ -243,6 +246,30 @@ void main() {
       painterSuppressed.paint(canvas, const Size(400, 800));
       final picture = pictureRecorder.endRecording();
       expect(picture, isNotNull);
+    });
+
+    testWidgets('ArWorldScannerOverlay renders Lottie mobile surface scanning animation and floor detection status', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Stack(
+              children: [
+                ArWorldScannerOverlay(
+                  floorConfidence: 0.0,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Verify status text and HUD
+      expect(find.text('Detecting Floor & Walls...'), findsOneWidget);
+      expect(find.text('ARCORE SPATIAL SCAN'), findsOneWidget);
+      expect(find.textContaining('Point camera towards the floor and move slowly'), findsOneWidget);
+
+      // Verify Lottie animation widget is rendered
+      expect(find.byType(Lottie), findsOneWidget);
     });
   });
 }

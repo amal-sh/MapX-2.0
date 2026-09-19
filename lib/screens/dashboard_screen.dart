@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'mapping_screen.dart';
@@ -94,18 +95,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('MapX Dashboard'),
+        title: Image.asset(
+          'assets/images/transp_banner.png',
+          height: 52,
+          fit: BoxFit.contain,
+        ),
+          
         centerTitle: true,
-        elevation: 0,
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: Colors.black))
           : _entries.isEmpty
               ? _buildEmptyState()
               : _buildMapList(),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _startNewMap,
-        icon: const Icon(Icons.add),
+        icon: const Icon(CupertinoIcons.add),
         label: const Text('New Map'),
       ),
     );
@@ -116,16 +121,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.map_outlined, size: 80, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          Text(
-            'No maps found.',
-            style: TextStyle(fontSize: 20, color: Colors.grey.shade600),
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F5),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(CupertinoIcons.map, size: 64, color: Color(0xFF71717A)),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'No maps found',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Colors.black),
           ),
           const SizedBox(height: 8),
-          Text(
-            'Tap "New Map" to start exploring!',
-            style: TextStyle(color: Colors.grey.shade500),
+          const Text(
+            'Tap "New Map" to start mapping your space.',
+            style: TextStyle(color: Color(0xFF71717A), fontSize: 14),
           ),
         ],
       ),
@@ -153,31 +165,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildBuildingCard(String name, List<_MapEntry> floors) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
+      ),
       child: Column(
         children: [
           ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            leading: const CircleAvatar(
-              backgroundColor: Colors.teal,
-              child: Icon(Icons.apartment, color: Colors.white),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            leading: Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(CupertinoIcons.building_2_fill, color: Colors.white, size: 22),
             ),
-            title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-            subtitle: Text(floors.length == 1 ? '1 floor' : '${floors.length} floors'),
+            title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17, color: Colors.black)),
+            subtitle: Text(
+              floors.length == 1 ? '1 floor' : '${floors.length} floors',
+              style: const TextStyle(color: Color(0xFF71717A), fontSize: 13),
+            ),
           ),
           const Divider(height: 1),
           for (final entry in floors)
             ListTile(
               dense: true,
-              contentPadding: const EdgeInsets.only(left: 32, right: 8),
-              leading: const Icon(Icons.layers_outlined, color: Colors.teal),
-              title: Text(entry.floor == null ? 'No floor set' : 'Floor ${entry.floor}'),
-              subtitle: const Text('Tap to view map'),
+              contentPadding: const EdgeInsets.only(left: 24, right: 12),
+              leading: const Icon(CupertinoIcons.square_stack_3d_up, color: Color(0xFF18181B), size: 18),
+              title: Text(
+                entry.floor == null ? 'No floor set' : 'Floor ${entry.floor}',
+                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Colors.black),
+              ),
+              subtitle: const Text('Tap to open map', style: TextStyle(color: Color(0xFF71717A), fontSize: 12)),
               trailing: IconButton(
-                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                icon: const Icon(CupertinoIcons.trash, color: Color(0xFF71717A), size: 18),
                 onPressed: () => _confirmDelete(entry),
               ),
               onTap: () {
@@ -189,13 +215,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 );
               },
             ),
+          const Divider(height: 1),
           ListTile(
             dense: true,
-            contentPadding: const EdgeInsets.only(left: 32, right: 8),
-            leading: const Icon(Icons.add_circle_outline, color: Colors.teal),
+            contentPadding: const EdgeInsets.only(left: 24, right: 12),
+            leading: const Icon(CupertinoIcons.plus_circle, color: Colors.black, size: 18),
             title: const Text(
               'Add Floor',
-              style: TextStyle(color: Colors.teal, fontWeight: FontWeight.w600),
+              style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600, fontSize: 13),
             ),
             onTap: () => _addFloor(name),
           ),
@@ -220,7 +247,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Navigator.pop(context);
               _deleteMap(entry.key);
             },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+            child: const Text('Delete', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
           ),
         ],
       ),

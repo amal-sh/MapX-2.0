@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -435,7 +436,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       return (
         title: 'You have arrived',
         subtitle: _destination?.label ?? '',
-        icon: Icons.flag,
+        icon: CupertinoIcons.flag_fill,
       );
     }
 
@@ -445,7 +446,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
             ? 'Turn Left ${_offPathAngleDelta.abs().toStringAsFixed(0)}°'
             : 'Turn Right ${_offPathAngleDelta.abs().toStringAsFixed(0)}°',
         subtitle: 'Face towards path to continue',
-        icon: _turnDirection == 'left' ? Icons.turn_left : Icons.turn_right,
+        icon: _turnDirection == 'left' ? CupertinoIcons.arrow_turn_up_left : CupertinoIcons.arrow_turn_up_right,
       );
     }
 
@@ -453,7 +454,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       return (
         title: 'Stairs to Floor ${_activeTransition!.toFloor}',
         subtitle: 'Tap confirmation button below once arrived on Floor ${_activeTransition!.toFloor}',
-        icon: Icons.stairs,
+        icon: CupertinoIcons.arrow_up_right_square,
       );
     }
 
@@ -461,7 +462,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       return (
         title: 'Tracking Degraded',
         subtitle: 'Point camera at floor and move slowly',
-        icon: Icons.warning_amber,
+        icon: CupertinoIcons.exclamationmark_triangle_fill,
       );
     }
 
@@ -495,7 +496,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
           return (
             title: 'You have arrived',
             subtitle: _destination?.label ?? '',
-            icon: Icons.flag,
+            icon: CupertinoIcons.flag_fill,
           );
         }
       } else {
@@ -507,10 +508,10 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       if (instr.distance > _liveProgress) {
         final distToTurn = instr.distance - _liveProgress;
         final icon = instr.label.contains('U-turn')
-            ? Icons.u_turn_left
+            ? CupertinoIcons.arrow_uturn_left
             : instr.angleDeltaDeg > 0
-                ? Icons.turn_right
-                : Icons.turn_left;
+                ? CupertinoIcons.arrow_turn_up_right
+                : CupertinoIcons.arrow_turn_up_left;
         return (
           title: instr.label,
           subtitle: 'in ${distToTurn.toStringAsFixed(0)}m',
@@ -522,7 +523,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     return (
       title: 'Continue straight',
       subtitle: 'to ${_destination?.label ?? "destination"}',
-      icon: Icons.straight,
+      icon: CupertinoIcons.arrow_up,
     );
   }
 
@@ -597,9 +598,15 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
               Positioned(
                 top: MediaQuery.of(context).padding.top + 8,
                 left: 14,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
-                  onPressed: _stopNavigation,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.65),
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    icon: const Icon(CupertinoIcons.back, color: Colors.white, size: 24),
+                    onPressed: _stopNavigation,
+                  ),
                 ),
               ),
 
@@ -609,30 +616,24 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                 top: MediaQuery.of(context).padding.top + 14,
                 left: 64,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0F172A).withValues(alpha: 0.85),
+                    color: Colors.black.withValues(alpha: 0.85),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: _trackingConfidence == TrackingConfidence.high
-                          ? const Color(0xFF10B981)
-                          : Colors.amber,
-                    ),
+                    border: Border.all(color: Colors.white24, width: 1),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        Icons.anchor,
-                        color: _trackingConfidence == TrackingConfidence.high
-                            ? const Color(0xFF10B981)
-                            : Colors.amber,
-                        size: 14,
+                      const Icon(
+                        CupertinoIcons.pin_fill,
+                        color: Colors.white,
+                        size: 13,
                       ),
                       const SizedBox(width: 6),
                       Text(
                         'Floor ${_liveCameraHeight.toStringAsFixed(2)}m',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 12),
                       ),
                     ],
                   ),
@@ -677,20 +678,21 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.amber.shade900.withValues(alpha: 0.92),
+                      color: Colors.black.withValues(alpha: 0.92),
                       borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white24),
                       boxShadow: [
-                        BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 8),
+                        BoxShadow(color: Colors.black.withValues(alpha: 0.4), blurRadius: 8),
                       ],
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.sync, color: Colors.white, size: 14),
-                        const SizedBox(width: 6),
+                        const Icon(CupertinoIcons.arrow_2_circlepath, color: Colors.white, size: 14),
+                        const SizedBox(width: 8),
                         Text(
                           _driftReason.isNotEmpty ? _driftReason : 'Calibrating tracking...',
-                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
@@ -708,12 +710,12 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A).withValues(alpha: 0.92),
+                      color: Colors.black.withValues(alpha: 0.92),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: const Color(0xFF10B981), width: 1.2),
+                      border: Border.all(color: Colors.white, width: 1.2),
                       boxShadow: [
                         BoxShadow(
-                          color: const Color(0xFF10B981).withValues(alpha: 0.35),
+                          color: Colors.white.withValues(alpha: 0.15),
                           blurRadius: 14,
                         ),
                       ],
@@ -721,13 +723,13 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+                        Icon(CupertinoIcons.checkmark_circle_fill, color: Colors.white, size: 16),
                         SizedBox(width: 8),
                         Text(
                           'Floor Anchored in 3D Space',
                           style: TextStyle(
                             color: Colors.white,
-                            fontWeight: FontWeight.bold,
+                            fontWeight: FontWeight.w700,
                             fontSize: 13,
                           ),
                         ),
@@ -755,16 +757,19 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   right: 24,
                   child: ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.teal.shade700,
+                      backgroundColor: Colors.black,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: const BorderSide(color: Colors.white24),
+                      ),
                       elevation: 6,
                     ),
-                    icon: const Icon(Icons.stairs, size: 22),
+                    icon: const Icon(CupertinoIcons.arrow_up_right_square, size: 20),
                     label: Text(
                       'I have reached Floor ${_activeTransition!.toFloor}',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
                     ),
                     onPressed: () {
                       setState(() {
@@ -798,37 +803,50 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     final nodes = _computedNodes;
     return Scaffold(
       appBar: AppBar(
+        leading: CupertinoNavigationBarBackButton(
+          color: Colors.black,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
         title: Text(widget.mapName),
         actions: [
           IconButton(
-            icon: const Icon(Icons.videocam),
+            icon: const Icon(CupertinoIcons.videocam),
             tooltip: 'AR Navigation (without ARCore)',
             onPressed: _startSensorArNavigation,
           )
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: Colors.black))
           : Column(
               children: [
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
                   width: double.infinity,
-                  color: Colors.teal.shade50,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFAFAFA),
+                    border: Border(bottom: BorderSide(color: Color(0xFFE4E4E7))),
+                  ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       _Stat(label: 'Steps', value: '$_stepCount'),
+                      Container(width: 1, height: 24, color: const Color(0xFFE4E4E7)),
                       _Stat(label: 'Nodes', value: '${nodes.length}'),
+                      Container(width: 1, height: 24, color: const Color(0xFFE4E4E7)),
                       _Stat(label: 'Distance', value: '${_pathLength.toStringAsFixed(1)}m'),
+                      Container(width: 1, height: 24, color: const Color(0xFFE4E4E7)),
                       _Stat(label: 'Floor', value: '$_currentFloor'),
                     ],
                   ),
                 ),
                 if (_waypoints.isNotEmpty)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    color: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      border: Border(bottom: BorderSide(color: Color(0xFFE4E4E7))),
+                    ),
                     child: Row(
                       children: [
                         Expanded(
@@ -876,13 +894,14 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                     padding: const EdgeInsets.all(16.0),
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.teal,
+                        backgroundColor: Colors.black,
                         foregroundColor: Colors.white,
-                        minimumSize: const Size(double.infinity, 50),
+                        minimumSize: const Size(double.infinity, 52),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
                       onPressed: _canStartNavigation ? _startArNavigation : null,
-                      icon: const Icon(Icons.navigation),
-                      label: const Text('Start AR Navigation', style: TextStyle(fontSize: 16)),
+                      icon: const Icon(CupertinoIcons.location_north_fill, size: 18),
+                      label: const Text('Start AR Navigation', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                     ),
                   ),
                 ),
@@ -901,8 +920,9 @@ class _Stat extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.teal)),
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+        Text(value, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17, color: Colors.black)),
+        const SizedBox(height: 2),
+        Text(label, style: const TextStyle(color: Color(0xFF71717A), fontSize: 11, fontWeight: FontWeight.w500)),
       ],
     );
   }
@@ -917,12 +937,12 @@ class _GuidanceBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withValues(alpha: 0.95),
+        color: Colors.black.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.5), width: 1.5),
+        border: Border.all(color: Colors.white24, width: 1.2),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF00E5FF).withValues(alpha: 0.25),
+            color: Colors.black.withValues(alpha: 0.4),
             blurRadius: 20,
             spreadRadius: 2,
           ),
@@ -933,10 +953,10 @@ class _GuidanceBanner extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
+              color: Colors.white.withValues(alpha: 0.12),
               shape: BoxShape.circle,
             ),
-            child: Icon(guidance.icon, color: const Color(0xFF00E5FF), size: 32),
+            child: Icon(guidance.icon, color: Colors.white, size: 28),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -946,11 +966,12 @@ class _GuidanceBanner extends StatelessWidget {
               children: [
                 Text(
                   guidance.title,
-                  style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
                 ),
+                const SizedBox(height: 2),
                 Text(
                   guidance.subtitle,
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  style: const TextStyle(color: Color(0xFFA1A1AA), fontSize: 13),
                 ),
               ],
             ),
@@ -972,8 +993,9 @@ class _DistanceBar extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withValues(alpha: 0.95),
+        color: Colors.black.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white24),
         boxShadow: [
           BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 12, offset: const Offset(0, 4)),
         ],
@@ -994,8 +1016,8 @@ class _DistanceBar extends StatelessWidget {
   Widget _distanceStat(String value, String label) {
     return Column(
       children: [
-        Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-        Text(label, style: const TextStyle(color: Colors.white60, fontSize: 11)),
+        Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+        Text(label, style: const TextStyle(color: Color(0xFFA1A1AA), fontSize: 11)),
       ],
     );
   }
