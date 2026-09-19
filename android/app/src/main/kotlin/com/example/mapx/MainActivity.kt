@@ -82,15 +82,44 @@ class MainActivity : FlutterActivity(), SensorEventListener {
 
     private var magnitudeBaseline = SensorManager.GRAVITY_EARTH
 
-    // ARCore floor detection state
+    // ARCore 6-DOF VIO tracking state
+    @Volatile
+    private var vioX = 0f
+    @Volatile
+    private var vioY = 0f
+    @Volatile
+    private var vioZ = 0f
+    @Volatile
+    private var vioQx = 0f
+    @Volatile
+    private var vioQy = 0f
+    @Volatile
+    private var vioQz = 0f
+    @Volatile
+    private var vioQw = 1f
+
+    // ARCore floor & wall detection state
     @Volatile
     private var floorDetected = false
     @Volatile
     private var floorHeight = 1.35f
     @Volatile
+    private var floorConfidence = 0f
+    @Volatile
     private var cameraFovY = 60.0f
     @Volatile
     private var arTrackingState = "INITIALIZING"
+    @Volatile
+    private var arTrackingFailureReason = "NONE"
+    @Volatile
+    private var depthSupported = false
+    @Volatile
+    private var depthAvailable = false
+    @Volatile
+    private var sessionConfigured = false
+
+    @Volatile
+    private var detectedWalls: List<Map<String, Any>> = emptyList()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -118,6 +147,22 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     "startSession" -> {
                         startArSessionFlow()
                         result.success(null)
+                    }
+                    "getDetectedWalls" -> {
+                        result.success(detectedWalls)
+                    }
+                    "isDepthSupported" -> {
+                        result.success(depthSupported)
+                    }
+                    "checkObstruction" -> {
+                        val screenX = (call.argument<Double>("screenX") ?: 0.5).toFloat()
+                        val screenY = (call.argument<Double>("screenY") ?: 0.5).toFloat()
+                        val targetDist = (call.argument<Double>("targetDistance") ?: 5.0).toFloat()
+                        checkPointObstruction(screenX, screenY, targetDist, result)
+                    }
+                    "checkDepthOcclusions" -> {
+                        val queries = call.argument<List<Map<String, Any>>>("queries") ?: emptyList()
+                        batchCheckDepthOcclusions(queries, result)
                     }
                     else -> result.notImplemented()
                 }
@@ -184,8 +229,14 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         mainHandler.postDelayed(object : Runnable {
             override fun run() {
                 val data = mapOf(
-                    "x" to 0f, "y" to 0f, "z" to 0f,
-                    "tracking" to true,
+                    "x" to vioX.toDouble(),
+                    "y" to vioY.toDouble(),
+                    "z" to vioZ.toDouble(),
+                    "qx" to vioQx.toDouble(),
+                    "qy" to vioQy.toDouble(),
+                    "qz" to vioQz.toDouble(),
+                    "qw" to vioQw.toDouble(),
+                    "tracking" to (arTrackingState == "TRACKING"),
                     "heading" to heading,
                     "renderHeading" to renderHeading,
                     "tilt" to tilt,
@@ -194,8 +245,13 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     "features" to 100, // Dummy value
                     "floorDetected" to floorDetected,
                     "floorHeight" to floorHeight.toDouble(),
+                    "floorConfidence" to floorConfidence.toDouble(),
                     "cameraFovY" to cameraFovY.toDouble(),
-                    "arTrackingState" to arTrackingState
+                    "arTrackingState" to arTrackingState,
+                    "trackingFailureReason" to arTrackingFailureReason,
+                    "depthSupported" to depthSupported,
+                    "depthAvailable" to depthAvailable,
+                    "walls" to detectedWalls
                 )
                 eventSink?.success(data)
                 if (sensorsRegistered) {
@@ -301,18 +357,20 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         arSceneView = null
     }
 
-    // ARCore floor detection and anchoring:
-    // ArSceneView actively scans for HORIZONTAL_UPWARD_FACING planes (the floor)
-    // and tests camera-to-floor distance & FOV to anchor the navigation line
-    // precisely to the physical ground.
+    // ARCore floor & wall detection and anchoring:
+    // ArSceneView actively scans for HORIZONTAL_UPWARD_FACING planes (floor)
+    // and VERTICAL planes (walls), and leverages Depth API where supported.
     private fun startArNavigationMode() {
         if (arSceneView != null) return
 
         floorDetected = false
+        floorConfidence = 0f
         arTrackingState = "INITIALIZING"
+        arTrackingFailureReason = "NONE"
+        sessionConfigured = false
 
         arSceneView = ArSceneView(this).apply {
-            planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
+            planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
             planeRenderer.isVisible = true
             planeRenderer.isEnabled = true
 
@@ -320,53 +378,142 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 val camera = arFrame.camera
                 val state = camera.trackingState
                 arTrackingState = state.name
+                arTrackingFailureReason = camera.trackingFailureReason.name
+
+                // Configure ARCore session for both horizontal/vertical planes and Depth API
+                if (!sessionConfigured) {
+                    try {
+                        val session = arFrame.session
+                        val config = session.config
+                        config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                        val depthSupp = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
+                        if (depthSupp) {
+                            config.depthMode = Config.DepthMode.AUTOMATIC
+                        } else {
+                            config.depthMode = Config.DepthMode.DISABLED
+                        }
+                        config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                        session.configure(config)
+                        this@MainActivity.depthSupported = depthSupp
+                        sessionConfigured = true
+                    } catch (_: Exception) {}
+                }
 
                 if (state == TrackingState.TRACKING) {
-                    // 1. Try hit-test near the center-bottom of the viewport
+                    val pose = camera.pose
+                    vioX = pose.tx()
+                    vioY = pose.ty()
+                    vioZ = pose.tz()
+                    vioQx = pose.qx()
+                    vioQy = pose.qy()
+                    vioQz = pose.qz()
+                    vioQw = pose.qw()
+
+                    // Test depth availability on this frame
+                    if (depthSupported) {
+                        try {
+                            val depthImg = arFrame.frame.acquireDepthImage16Bits()
+                            depthAvailable = true
+                            depthImg.close()
+                        } catch (_: Exception) {
+                            depthAvailable = false
+                        }
+                    }
+
+                    // 1. Multi-point floor raycast in the lower region of screen
                     val w = width.toFloat()
                     val h = height.toFloat()
-                    val hitX = if (w > 0) w * 0.5f else 500f
-                    val hitY = if (h > 0) h * 0.7f else 1000f
+                    val samplePoints = listOf(
+                        Pair(0.50f, 0.75f),
+                        Pair(0.35f, 0.70f),
+                        Pair(0.65f, 0.70f),
+                        Pair(0.50f, 0.60f),
+                        Pair(0.50f, 0.85f)
+                    )
 
-                    var foundFloor = false
-                    val hit = arFrame.hitTest(hitX, hitY)
-                    if (hit != null) {
-                        val trackable = hit.trackable
-                        if (trackable is Plane &&
-                            trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
-                            trackable.trackingState == TrackingState.TRACKING
-                        ) {
-                            val camPose = camera.pose
-                            val hitPose = hit.hitPose
-                            val diff = camPose.ty() - hitPose.ty()
-                            if (diff in 0.3f..3.0f) {
-                                floorHeight = floorHeight * 0.9f + diff * 0.1f
-                                foundFloor = true
+                    var validFloorHits = 0
+                    var sumFloorY = 0f
+                    for ((rx, ry) in samplePoints) {
+                        val hitX = if (w > 0) w * rx else 500f * rx * 2
+                        val hitY = if (h > 0) h * ry else 1000f * ry
+                        val hits = arFrame.hitTest(hitX, hitY)
+                        if (hits != null) {
+                            val trackable = hits.trackable
+                            if (trackable is Plane &&
+                                trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
+                                trackable.trackingState == TrackingState.TRACKING
+                            ) {
+                                val camPose = camera.pose
+                                val hitPose = hits.hitPose
+                                val diff = camPose.ty() - hitPose.ty()
+                                // Valid human eye/chest height to floor: 0.9m to 2.1m
+                                if (diff in 0.9f..2.1f) {
+                                    validFloorHits++
+                                    sumFloorY += diff
+                                }
                             }
                         }
                     }
 
-                    // 2. Fallback: query all active horizontal upward planes
-                    if (!foundFloor) {
+                    if (validFloorHits > 0) {
+                        val measured = sumFloorY / validFloorHits
+                        floorHeight = floorHeight * 0.85f + measured * 0.15f
+                        floorDetected = true
+                        floorConfidence = (validFloorHits.toFloat() / samplePoints.size.toFloat()).coerceIn(0.2f, 1.0f)
+                    } else {
+                        // 2. Fallback: query all active horizontal upward planes with minimum area
                         val planes = arFrame.session.getAllTrackables(Plane::class.java)
                         val validFloorPlanes = planes.filter {
                             it.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
-                            it.trackingState == TrackingState.TRACKING
+                            it.trackingState == TrackingState.TRACKING &&
+                            (it.extentX * it.extentZ >= 0.25f)
                         }
                         if (validFloorPlanes.isNotEmpty()) {
                             val camY = camera.pose.ty()
                             val closestPlane = validFloorPlanes.minByOrNull { abs(camY - it.centerPose.ty()) }
                             if (closestPlane != null) {
                                 val diff = camY - closestPlane.centerPose.ty()
-                                if (diff in 0.3f..3.0f) {
-                                    floorHeight = floorHeight * 0.9f + diff * 0.1f
-                                    foundFloor = true
+                                if (diff in 0.9f..2.1f) {
+                                    floorHeight = floorHeight * 0.85f + diff * 0.15f
+                                    floorDetected = true
+                                    floorConfidence = 0.4f
                                 }
                             }
+                        } else {
+                            floorDetected = false
+                            floorConfidence = 0f
                         }
                     }
 
-                    floorDetected = foundFloor
+                    // 3. Extract vertical planes (walls) with 3D endpoints in world coordinates
+                    try {
+                        val planes = arFrame.session.getAllTrackables(Plane::class.java)
+                        val validWalls = planes.filter {
+                            it.type == Plane.Type.VERTICAL &&
+                            it.trackingState == TrackingState.TRACKING &&
+                            (it.extentX * it.extentZ >= 0.20f)
+                        }
+                        val wallList = mutableListOf<Map<String, Any>>()
+                        for (wall in validWalls) {
+                            val center = wall.centerPose
+                            val halfExtX = wall.extentX / 2f
+                            val p1Local = floatArrayOf(-halfExtX, 0f, 0f)
+                            val p2Local = floatArrayOf(halfExtX, 0f, 0f)
+                            val p1World = center.transformPoint(p1Local)
+                            val p2World = center.transformPoint(p2Local)
+                            wallList.add(mapOf(
+                                "x1" to p1World[0].toDouble(),
+                                "y1" to p1World[1].toDouble(),
+                                "z1" to p1World[2].toDouble(),
+                                "x2" to p2World[0].toDouble(),
+                                "y2" to p2World[1].toDouble(),
+                                "z2" to p2World[2].toDouble(),
+                                "extentX" to wall.extentX.toDouble(),
+                                "extentZ" to wall.extentZ.toDouble()
+                            ))
+                        }
+                        detectedWalls = wallList
+                    } catch (_: Exception) {}
 
                     // Compute vertical FOV from camera projection matrix
                     try {
@@ -382,6 +529,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     } catch (_: Exception) {}
                 } else {
                     floorDetected = false
+                    floorConfidence = 0f
                 }
             }
         }
@@ -392,6 +540,146 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             android.view.ViewGroup.LayoutParams.MATCH_PARENT,
             android.view.ViewGroup.LayoutParams.MATCH_PARENT
         ))
+    }
+
+    private fun checkPointObstruction(screenX: Float, screenY: Float, targetDist: Float, result: MethodChannel.Result) {
+        val sceneView = arSceneView
+        if (sceneView == null || arTrackingState != "TRACKING") {
+            result.success(mapOf("isBlocked" to false, "distance" to -1.0))
+            return
+        }
+        val w = sceneView.width.toFloat()
+        val h = sceneView.height.toFloat()
+        val hitX = if (w > 0) screenX * w else 500f
+        val hitY = if (h > 0) screenY * h else 1000f
+
+        try {
+            val frame = sceneView.currentFrame?.frame
+            val hits = frame?.hitTest(hitX, hitY)
+            val firstHit = hits?.firstOrNull()
+            if (firstHit != null) {
+                val dist = firstHit.distance
+                val isBlocked = dist < (targetDist - 0.35f)
+                result.success(mapOf("isBlocked" to isBlocked, "distance" to dist.toDouble()))
+            } else {
+                result.success(mapOf("isBlocked" to false, "distance" to -1.0))
+            }
+        } catch (_: Exception) {
+            result.success(mapOf("isBlocked" to false, "distance" to -1.0))
+        }
+    }
+
+    private fun batchCheckDepthOcclusions(
+        queries: List<Map<String, Any>>,
+        result: MethodChannel.Result
+    ) {
+        val sceneView = arSceneView
+        if (sceneView == null || arTrackingState != "TRACKING") {
+            val emptyResults = queries.map { q ->
+                mapOf(
+                    "id" to (q["id"] ?: 0),
+                    "isBlocked" to false,
+                    "distance" to -1.0,
+                    "expectedDistance" to (q["expectedDistance"] ?: 5.0)
+                )
+            }
+            result.success(emptyResults)
+            return
+        }
+
+        val frame = sceneView.currentFrame?.frame
+        if (frame == null) {
+            val emptyResults = queries.map { q ->
+                mapOf(
+                    "id" to (q["id"] ?: 0),
+                    "isBlocked" to false,
+                    "distance" to -1.0,
+                    "expectedDistance" to (q["expectedDistance"] ?: 5.0)
+                )
+            }
+            result.success(emptyResults)
+            return
+        }
+
+        val w = sceneView.width.toFloat()
+        val h = sceneView.height.toFloat()
+        val outList = mutableListOf<Map<String, Any>>()
+
+        var depthImg: android.media.Image? = null
+        var depthBuffer: java.nio.ShortBuffer? = null
+        var depthWidth = 0
+        var depthHeight = 0
+        var rowStride = 0
+        var pixelStride = 0
+
+        if (depthSupported && depthAvailable) {
+            try {
+                val img = frame.acquireDepthImage16Bits()
+                depthImg = img
+                val plane = img.planes[0]
+                depthBuffer = plane.buffer.order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+                depthWidth = img.width
+                depthHeight = img.height
+                rowStride = plane.rowStride / 2 // in shorts
+                pixelStride = plane.pixelStride / 2 // in shorts
+            } catch (_: Exception) {}
+        }
+
+        try {
+            for (q in queries) {
+                val id = (q["id"] as? Number)?.toInt() ?: 0
+                val screenX = (q["screenX"] as? Number)?.toFloat() ?: 0.5f
+                val screenY = (q["screenY"] as? Number)?.toFloat() ?: 0.5f
+                val expectedDist = (q["expectedDistance"] as? Number)?.toFloat() ?: 5.0f
+
+                var measuredDistance = -1.0f
+                var isBlocked = false
+
+                // 1. Check Depth Image buffer if available
+                if (depthBuffer != null && depthWidth > 0 && depthHeight > 0) {
+                    val ix = (screenX * depthWidth).toInt().coerceIn(0, depthWidth - 1)
+                    val iy = (screenY * depthHeight).toInt().coerceIn(0, depthHeight - 1)
+                    val offset = iy * rowStride + ix * (if (pixelStride > 0) pixelStride else 1)
+                    if (offset >= 0 && offset < depthBuffer.capacity()) {
+                        val rawDepthMm = depthBuffer.get(offset).toInt() and 0xFFFF
+                        if (rawDepthMm in 100..25000) {
+                            measuredDistance = rawDepthMm / 1000.0f
+                            isBlocked = measuredDistance < (expectedDist - 0.35f)
+                        }
+                    }
+                }
+
+                // 2. Fallback to raycast against scene planes/depth mesh
+                if (measuredDistance < 0f) {
+                    val hitX = if (w > 0) screenX * w else 500f
+                    val hitY = if (h > 0) screenY * h else 1000f
+                    try {
+                        val hits = frame.hitTest(hitX, hitY)
+                        val firstHit = hits?.firstOrNull()
+                        if (firstHit != null) {
+                            val d = firstHit.distance
+                            measuredDistance = d
+                            isBlocked = d < (expectedDist - 0.35f)
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                outList.add(
+                    mapOf(
+                        "id" to id,
+                        "isBlocked" to isBlocked,
+                        "distance" to measuredDistance.toDouble(),
+                        "expectedDistance" to expectedDist.toDouble()
+                    )
+                )
+            }
+        } finally {
+            try {
+                depthImg?.close()
+            } catch (_: Exception) {}
+        }
+
+        result.success(outList)
     }
 
     private fun setupSensors() {

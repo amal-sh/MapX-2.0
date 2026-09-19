@@ -1,16 +1,13 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../../logic/depth_occlusion_manager.dart';
+import '../../logic/wall_collision_validator.dart';
 import '../../models/map_models.dart';
 
 /// Projects the route (a flat sequence of east/north path nodes) into the
 /// live camera view and draws it as a floor-hugging glowing line with
-/// start/destination markers - using plain
-/// pinhole-camera perspective math driven by the walker's live PDR position
-/// and compass heading/tilt, not ARCore world tracking. See the AR
-/// floor-detection investigation: this project's floor surfaces made ARCore
-/// plane/depth tracking too unreliable to anchor 3D content on, so the path
-/// is drawn as a 2D overlay computed directly from the same PDR data that
-/// already renders the accurate 2D map.
+/// start/destination markers, strictly anchored to the detected physical floor
+/// and occluded by physical walls and obstacles.
 class ArPathPainter extends CustomPainter {
   final List<PathNode> route;
   final double liveEast;
@@ -23,6 +20,12 @@ class ArPathPainter extends CustomPainter {
   final double cameraHeight;
   final double verticalFovDegrees;
   final double? liveProgress;
+  final List<WallSegment> walls;
+  final bool isFloorLocked;
+  final int currentFloor;
+  final bool isFacingPath;
+  final double? maxRevealedDistance;
+  final Map<int, WaypointOcclusionState>? waypointOcclusions;
 
   ArPathPainter({
     required this.route,
@@ -36,11 +39,17 @@ class ArPathPainter extends CustomPainter {
     this.cameraHeight = 1.35,
     this.verticalFovDegrees = 60.0,
     this.liveProgress,
+    this.walls = const [],
+    this.isFloorLocked = true,
+    this.currentFloor = 0,
+    this.isFacingPath = true,
+    this.maxRevealedDistance,
+    this.waypointOcclusions,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (route.length < 2) return;
+    if (route.length < 2 || !isFloorLocked || !isFacingPath) return;
 
     final width = size.width;
     final height = size.height;
@@ -203,7 +212,9 @@ class ArPathPainter extends CustomPainter {
     const maxVisibleMeters = 8.0;
     const fadeZoneMeters = 2.5;
     final startDist = distances[nearestIdx];
-    final visibleEndDist = math.min(totalDistance, startDist + maxVisibleMeters);
+    // Progressive path reveal: cap strictly at upcoming turn / decision point
+    final capDist = maxRevealedDistance ?? (startDist + maxVisibleMeters);
+    final visibleEndDist = math.min(totalDistance, math.min(startDist + 15.0, capDist));
 
     double fadeFor(double distAlongPath) {
       final remaining = visibleEndDist - distAlongPath;
@@ -219,6 +230,18 @@ class ArPathPainter extends CustomPainter {
     for (var i = nearestIdx; i < route.length; i++) {
       if (distances[i] > visibleEndDist) break;
       final node = route[i];
+      if (node.floor != currentFloor) break;
+      // Prevent ribbon from penetrating physical walls
+      if (walls.isNotEmpty &&
+          WallCollisionValidator.isLineOfSightBlocked(
+            startEast: liveEast,
+            startNorth: liveNorth,
+            targetEast: node.east,
+            targetNorth: node.north,
+            walls: walls,
+          )) {
+        break; // Stop rendering ahead behind the wall
+      }
       final sample = projectWithWidth(node.east, node.north, fadeFor(distances[i]));
       if (sample == null) continue; // behind the camera
       visiblePoints.add(sample);
@@ -254,29 +277,71 @@ class ArPathPainter extends CustomPainter {
       project: project,
       zCamAt: zCamAt,
       nearPlane: nearPlane,
+      walls: walls,
     );
 
-    // 3. Start marker.
+    // 3. Start marker (only if on current floor and not wall-obstructed)
     final start = route.first;
-    final startPos = project(start.east, start.north);
-    if (startPos != null &&
-        startPos.dx >= -60 &&
-        startPos.dx <= width + 60 &&
-        startPos.dy >= -60 &&
-        startPos.dy <= height + 60) {
-      _drawFloorMarker(canvas, startPos, const Color(0xFF10B981), startLabel, 'START');
+    if (start.floor == currentFloor) {
+      final startPos = project(start.east, start.north);
+      final startBlocked = walls.isNotEmpty &&
+          WallCollisionValidator.isLineOfSightBlocked(
+            startEast: liveEast,
+            startNorth: liveNorth,
+            targetEast: start.east,
+            targetNorth: start.north,
+            walls: walls,
+          );
+      if (startPos != null &&
+          !startBlocked &&
+          startPos.dx >= -60 &&
+          startPos.dx <= width + 60 &&
+          startPos.dy >= -60 &&
+          startPos.dy <= height + 60) {
+        _drawFloorMarker(canvas, startPos, const Color(0xFF10B981), startLabel, 'START');
+      }
     }
 
-    // 4. Destination marker, or an off-screen cue pointing toward it.
+    // 4. Destination marker (only if on current floor, revealed within current segment, and not wall/depth obstructed)
     final dest = route.last;
-    final destPos = project(dest.east, dest.north);
-    if (destPos != null &&
+    final destOcclusion = waypointOcclusions?[dest.index] ?? WaypointOcclusionState.clear;
+    final destBlocked = (walls.isNotEmpty &&
+        WallCollisionValidator.isLineOfSightBlocked(
+          startEast: liveEast,
+          startNorth: liveNorth,
+          targetEast: dest.east,
+          targetNorth: dest.north,
+          walls: walls,
+        )) || destOcclusion.shouldHide;
+
+    // Progressive reveal check: only render floor marker if destination is reached by current reveal
+    final isDestRevealed = totalDistance <= visibleEndDist + 0.5;
+
+    // Depth-aware placement clamping: clamp position in open space in front of obstacle
+    var destE = dest.east;
+    var destN = dest.north;
+    if (destOcclusion.isOccluded && destOcclusion.clampedDistance != null) {
+      final ddx = dest.east - liveEast;
+      final ddz = dest.north - liveNorth;
+      final curDist = math.sqrt(ddx * ddx + ddz * ddz);
+      if (curDist > 0.01) {
+        final clampRatio = (destOcclusion.clampedDistance! / curDist).clamp(0.1, 1.0);
+        destE = liveEast + ddx * clampRatio;
+        destN = liveNorth + ddz * clampRatio;
+      }
+    }
+
+    final destPos = project(destE, destN);
+    if (dest.floor == currentFloor &&
+        isDestRevealed &&
+        !destBlocked &&
+        destPos != null &&
         destPos.dx >= -40 &&
         destPos.dx <= width + 40 &&
         destPos.dy >= -60 &&
         destPos.dy <= height + 60) {
       _drawFloorMarker(canvas, destPos, const Color(0xFFEF4444), destinationLabel, 'DESTINATION');
-    } else {
+    } else if (isDestRevealed) {
       final ddx = dest.east - liveEast;
       final ddz = dest.north - liveNorth;
       final destDist = math.sqrt(ddx * ddx + ddz * ddz);
@@ -304,6 +369,7 @@ class ArPathPainter extends CustomPainter {
     required Offset? Function(double east, double north, [double altitudeOffset]) project,
     required double Function(double east, double north, [double altitudeOffset]) zCamAt,
     required double nearPlane,
+    required List<WallSegment> walls,
   }) {
     if (route.length < 2 || distances.length < 2) return;
 
@@ -365,6 +431,19 @@ class ArPathPainter extends CustomPainter {
       if (distFade <= 0.02) continue;
 
       final pos = samplePosition(s);
+
+      // Verify chevron does not cross any physical wall
+      if (walls.isNotEmpty &&
+          WallCollisionValidator.isLineOfSightBlocked(
+            startEast: liveEast,
+            startNorth: liveNorth,
+            targetEast: pos.east,
+            targetNorth: pos.north,
+            walls: walls,
+          )) {
+        continue;
+      }
+
       final tangent = sampleTangent(s);
 
       // Marching wave pulse flowing towards the destination along the floor

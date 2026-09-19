@@ -5,10 +5,14 @@ import 'package:flutter/material.dart';
 /// horizontal floor plane and anchors the 3D world space.
 class ArWorldScannerOverlay extends StatefulWidget {
   final VoidCallback? onCancel;
+  final double floorConfidence;
+  final String? statusMessage;
 
   const ArWorldScannerOverlay({
     super.key,
     this.onCancel,
+    this.floorConfidence = 0.0,
+    this.statusMessage,
   });
 
   @override
@@ -67,9 +71,11 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                           ),
                         ),
                         const SizedBox(width: 8),
-                        const Text(
-                          'ARCORE SPATIAL SCAN',
-                          style: TextStyle(
+                        Text(
+                          widget.floorConfidence > 0.0
+                              ? 'LOCKING FLOOR ${(widget.floorConfidence * 100).toInt()}%'
+                              : 'ARCORE SPATIAL SCAN',
+                          style: const TextStyle(
                             color: Color(0xFF38BDF8),
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
@@ -137,9 +143,12 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                           size: 20,
                         ),
                         const SizedBox(width: 8),
-                        const Text(
-                          'Detecting 3D World & Floor...',
-                          style: TextStyle(
+                        Text(
+                          widget.statusMessage ??
+                              (widget.floorConfidence > 0.3
+                                  ? 'Validating Floor Stability...'
+                                  : 'Detecting Floor & Walls...'),
+                          style: const TextStyle(
                             color: Colors.white,
                             fontSize: 15,
                             fontWeight: FontWeight.bold,
@@ -150,7 +159,7 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Point camera towards the floor and move slowly to anchor navigation to real surfaces',
+                      'Point camera towards the floor and move slowly. Navigation objects will appear once the floor is locked.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Color(0xFF94A3B8),
@@ -158,6 +167,18 @@ class _ArWorldScannerOverlayState extends State<ArWorldScannerOverlay>
                         height: 1.3,
                       ),
                     ),
+                    if (widget.floorConfidence > 0.0) ...[
+                      const SizedBox(height: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: widget.floorConfidence.clamp(0.0, 1.0),
+                          backgroundColor: Colors.white12,
+                          valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF38BDF8)),
+                          minHeight: 4,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

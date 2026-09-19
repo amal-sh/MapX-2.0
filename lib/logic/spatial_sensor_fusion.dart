@@ -1,0 +1,426 @@
+import 'dart:async';
+import 'dart:math';
+import 'package:flutter/services.dart';
+
+import '../models/map_models.dart';
+import 'coordinate_transform.dart';
+import 'wall_collision_validator.dart';
+
+enum TrackingConfidence {
+  high,
+  medium,
+  low,
+  lost,
+}
+
+/// A comprehensive fused snapshot of the walker's physical position,
+/// 3D ARCore pose, floor metrics, walls, and tracking confidence.
+class FusedPosition {
+  final double east;
+  final double north;
+  final double headingDegrees;
+  final double tiltDegrees;
+  final double progressMeters; // arc-length meters along route
+  final double totalRouteMeters;
+  final bool isFloorDetected;
+  final double floorHeight;
+  final double floorConfidence;
+  final double cameraFovY;
+  final String arTrackingState;
+  final TrackingConfidence confidence;
+  final bool isDrifting;
+  final String driftReason;
+  final List<WallSegment> detectedWalls;
+  final bool depthSupported;
+  final bool depthAvailable;
+  final int stepCount;
+  final double actualStrideLength;
+
+  const FusedPosition({
+    required this.east,
+    required this.north,
+    required this.headingDegrees,
+    required this.tiltDegrees,
+    required this.progressMeters,
+    required this.totalRouteMeters,
+    this.isFloorDetected = false,
+    this.floorHeight = 1.35,
+    this.floorConfidence = 0.0,
+    this.cameraFovY = 60.0,
+    this.arTrackingState = 'INITIALIZING',
+    this.confidence = TrackingConfidence.medium,
+    this.isDrifting = false,
+    this.driftReason = '',
+    this.detectedWalls = const [],
+    this.depthSupported = false,
+    this.depthAvailable = false,
+    this.stepCount = 0,
+    this.actualStrideLength = 0.5,
+  });
+}
+
+/// Robust sensor fusion engine combining ARCore 6-DOF VIO metric displacement,
+/// PDR gait cadence filtering, corridor geometry constraints, and real-time drift detection.
+class SpatialSensorFusion {
+  static const _poseChannel = EventChannel('mapx/arcore_pose');
+
+  static const double minStepCadenceSeconds = 0.65;
+  static const double maxStepCadenceSeconds = 1.30;
+  static const double stepMotionThreshold = 0.40;
+
+  final List<PathNode> route;
+  final List<WallSegment> mappedWalls;
+  final double corridorHalfWidth;
+
+  late final List<double> _cumulativeDistances;
+  late final double _totalRouteDistance;
+  double get totalRouteDistance => _totalRouteDistance;
+
+  final CoordinateTransform coordinateTransform = CoordinateTransform();
+
+  final _controller = StreamController<FusedPosition>.broadcast();
+  Stream<FusedPosition> get positions => _controller.stream;
+
+  StreamSubscription? _sub;
+
+  // State
+  double _progress;
+  double _displayedProgress;
+  double _totalVioDisplacement = 0.0;
+  double _totalPdrDisplacement = 0.0;
+  int _stepCount = 0;
+  double _strideLengthEstimate = 0.55;
+
+  double? _lastVioX;
+  double? _lastVioZ;
+  double? _lastPoseTime;
+  double _lastStepTime = 0.0;
+  int _consecutiveGaitPeaks = 0;
+  bool _isGaitActive = false;
+  bool _wasTracking = false;
+
+  double get currentProgress => _progress;
+
+  // Smoothing filters
+  double? _smoothedSin;
+  double? _smoothedCos;
+  double? _smoothedTilt;
+  double? _smoothedCameraHeight;
+  double? _smoothedFov;
+
+  bool _isDrifting = false;
+  String _driftReason = '';
+
+  SpatialSensorFusion({
+    required this.route,
+    this.mappedWalls = const [],
+    this.corridorHalfWidth = 1.35,
+    double startProgress = 0.0,
+  })  : _progress = startProgress,
+        _displayedProgress = startProgress {
+    _cumulativeDistances = [0.0];
+    for (var i = 1; i < route.length; i++) {
+      final prev = route[i - 1];
+      final cur = route[i];
+      final d = sqrt(pow(cur.east - prev.east, 2) + pow(cur.north - prev.north, 2));
+      _cumulativeDistances.add(_cumulativeDistances.last + d);
+    }
+    _totalRouteDistance = _cumulativeDistances.isEmpty ? 0.0 : _cumulativeDistances.last;
+  }
+
+  void start() {
+    _sub ??= _poseChannel.receiveBroadcastStream().listen(_onPoseEvent);
+  }
+
+  void stop() {
+    _sub?.cancel();
+    _sub = null;
+  }
+
+  ({double east, double north, double headingDeg}) _sampleAt(double dist) {
+    final clamped = dist.clamp(0.0, _totalRouteDistance);
+    for (var i = 0; i < route.length - 1; i++) {
+      if (clamped >= _cumulativeDistances[i] && clamped <= _cumulativeDistances[i + 1]) {
+        final span = _cumulativeDistances[i + 1] - _cumulativeDistances[i];
+        final u = span > 0.0001 ? (clamped - _cumulativeDistances[i]) / span : 0.0;
+        final a = route[i];
+        final b = route[i + 1];
+        return (
+          east: a.east + (b.east - a.east) * u,
+          north: a.north + (b.north - a.north) * u,
+          headingDeg: b.heading,
+        );
+      }
+    }
+    final last = route.last;
+    return (east: last.east, north: last.north, headingDeg: last.heading);
+  }
+
+  double _angleDiff(double a, double b) {
+    var d = (a - b) % 360.0;
+    if (d > 180.0) d -= 360.0;
+    if (d < -180.0) d += 360.0;
+    return d;
+  }
+
+  void _onPoseEvent(dynamic event) {
+    final map = Map<String, dynamic>.from(event as Map);
+    final now = (map['timestamp'] as int) / 1e9;
+
+    final vioX = (map['x'] as num).toDouble();
+    final vioY = (map['y'] as num).toDouble();
+    final vioZ = (map['z'] as num).toDouble();
+    final heading = (map['heading'] as num).toDouble();
+    final renderHeading = (map['renderHeading'] as num?)?.toDouble() ?? heading;
+    final tilt = (map['tilt'] as num).toDouble();
+    final motion = (map['motion'] as num).toDouble();
+
+    final isFloorDetected = (map['floorDetected'] as bool?) ?? false;
+    final floorHeightRaw = (map['floorHeight'] as num?)?.toDouble() ?? 1.35;
+    final floorConfidence = (map['floorConfidence'] as num?)?.toDouble() ?? 0.0;
+    final cameraFovYRaw = (map['cameraFovY'] as num?)?.toDouble() ?? 60.0;
+    final arTrackingState = (map['arTrackingState'] as String?) ?? 'INITIALIZING';
+    final isTracking = arTrackingState == 'TRACKING';
+    final depthSupported = (map['depthSupported'] as bool?) ?? false;
+    final depthAvailable = (map['depthAvailable'] as bool?) ?? false;
+
+    // Parse dynamic walls detected by ARCore vertical plane tracker
+    final rawWalls = map['walls'] as List<dynamic>? ?? [];
+    final List<WallSegment> detectedWalls = [];
+    for (final w in rawWalls) {
+      if (w is Map) {
+        final x1 = (w['x1'] as num?)?.toDouble() ?? 0.0;
+        final z1 = (w['z1'] as num?)?.toDouble() ?? 0.0;
+        final x2 = (w['x2'] as num?)?.toDouble() ?? 0.0;
+        final z2 = (w['z2'] as num?)?.toDouble() ?? 0.0;
+        // Map world endpoints to map coordinates if calibrated
+        final p1 = coordinateTransform.isCalibrated
+            ? coordinateTransform.worldToMap(x1, z1)
+            : (east: x1, north: z1);
+        final p2 = coordinateTransform.isCalibrated
+            ? coordinateTransform.worldToMap(x2, z2)
+            : (east: x2, north: z2);
+        detectedWalls.add(WallSegment(
+          startEast: p1.east,
+          startNorth: p1.north,
+          endEast: p2.east,
+          endNorth: p2.north,
+        ));
+      }
+    }
+
+    // 1. Initial calibration when floor plane is locked, or Re-calibration after tracking recovery
+    if (isTracking && isFloorDetected) {
+      if (!coordinateTransform.isCalibrated) {
+        final startNode = route.first;
+        coordinateTransform.calibrate(
+          startEast: startNode.east,
+          startNorth: startNode.north,
+          startHeadingDeg: startNode.heading,
+          camX: vioX,
+          camY: vioY,
+          camZ: vioZ,
+          camYawDeg: renderHeading,
+          floorHeight: floorHeightRaw,
+        );
+      } else if (!_wasTracking) {
+        // RE-ANCHORING ON TRACKING RECOVERY:
+        // While ARCore tracking was degraded/lost, PDR dead-reckoning maintained the user's
+        // forward progress. Now that ARCore is tracking again, re-anchor the coordinate
+        // transform to the current corridor position so the virtual AR world aligns with the
+        // user's actual real-world location (e.g. at 10m, not back at 8m).
+        final currentPos = _sampleAt(_progress);
+        coordinateTransform.calibrate(
+          startEast: currentPos.east,
+          startNorth: currentPos.north,
+          startHeadingDeg: currentPos.headingDeg,
+          camX: vioX,
+          camY: vioY,
+          camZ: vioZ,
+          camYawDeg: renderHeading,
+          floorHeight: floorHeightRaw,
+        );
+        // Reset last VIO pose baseline to avoid computing a bogus jump across the tracking outage
+        _lastVioX = vioX;
+        _lastVioZ = vioZ;
+      }
+    }
+
+    // 2. Gait rhythm / step cadence detection
+    bool isStepEvent = false;
+    if (motion >= stepMotionThreshold) {
+      final gap = now - _lastStepTime;
+      if (gap >= minStepCadenceSeconds) {
+        _consecutiveGaitPeaks =
+            (gap <= maxStepCadenceSeconds && _consecutiveGaitPeaks > 0) ? _consecutiveGaitPeaks + 1 : 1;
+        _lastStepTime = now;
+
+        if (_consecutiveGaitPeaks >= 2) {
+          _isGaitActive = true;
+          _stepCount++;
+          _totalPdrDisplacement += _strideLengthEstimate;
+          isStepEvent = true;
+        }
+      }
+    } else if (now - _lastStepTime > maxStepCadenceSeconds * 1.5) {
+      _isGaitActive = false;
+      _consecutiveGaitPeaks = 0;
+    }
+
+    // 3. VIO Metric Displacement & Sensor Fusion with PDR Fallback
+    double deltaProgress = 0.0;
+    final tangentHeadingDeg = _sampleAt(_progress).headingDeg;
+    final isForward = _angleDiff(renderHeading, tangentHeadingDeg).abs() < 90.0;
+
+    if (isTracking) {
+      // ACTIVE TRACKING: High-precision metric VIO drives progression
+      if (_lastVioX != null && _wasTracking) {
+        final dx = vioX - _lastVioX!;
+        final dz = vioZ - _lastVioZ!;
+        final deltaDist = sqrt(dx * dx + dz * dz);
+
+        // Filter out glitchy VIO jumps (> 1.5m in one ~33ms frame)
+        if (deltaDist < 1.5) {
+          _totalVioDisplacement += deltaDist;
+
+          final damping = _isGaitActive ? 1.0 : 0.08;
+          deltaProgress = (isForward ? deltaDist : -deltaDist) * damping;
+
+          // Adapt stride length estimate when walking with active VIO
+          if (_isGaitActive && deltaDist > 0.15) {
+            _strideLengthEstimate = _strideLengthEstimate * 0.9 + deltaDist * 0.1;
+          }
+
+          // Anti-Slippage Fallback: If a step occurred but VIO barely moved (< 0.10m),
+          // supplement with PDR (e.g. featureless wall, dark corridor)
+          if (isStepEvent && deltaDist < 0.10) {
+            final pdrDelta = (isForward ? _strideLengthEstimate : -_strideLengthEstimate) * 0.75;
+            if (pdrDelta.abs() > deltaProgress.abs()) {
+              deltaProgress = pdrDelta;
+            }
+          }
+        }
+      }
+    } else {
+      // TRACKING LOST OR DEGRADED: PDR Dead-Reckoning Fallback
+      // When ARCore loses tracking, steps from the accelerometer maintain progress
+      // along the corridor so navigation remains persistent and never loses distance traveled!
+      if (isStepEvent) {
+        deltaProgress = isForward ? _strideLengthEstimate : -_strideLengthEstimate;
+        _totalVioDisplacement += deltaProgress.abs();
+      }
+    }
+
+    _lastVioX = vioX;
+    _lastVioZ = vioZ;
+    _wasTracking = isTracking;
+
+    // 4. Update along-corridor progress with boundary clamping
+    final proposedProgress = (_progress + deltaProgress).clamp(0.0, _totalRouteDistance);
+    final proposedPos = _sampleAt(proposedProgress);
+
+    // 5. Anti-Drift & Boundary Verification
+    _isDrifting = false;
+    _driftReason = '';
+
+    // Check A: Wall Penetration
+    final currentPos = _sampleAt(_progress);
+    final allWalls = [...mappedWalls, ...detectedWalls];
+    final wallBlocked = WallCollisionValidator.isLineOfSightBlocked(
+      startEast: currentPos.east,
+      startNorth: currentPos.north,
+      targetEast: proposedPos.east,
+      targetNorth: proposedPos.north,
+      walls: allWalls,
+    );
+
+    if (wallBlocked) {
+      _isDrifting = true;
+      _driftReason = 'Wall collision detected ahead';
+      // Inhibit advancing through the wall!
+    } else {
+      _progress = proposedProgress;
+    }
+
+    // Check B: VIO vs PDR Disparity check
+    if (_totalVioDisplacement > 8.0 && _totalPdrDisplacement > 4.0) {
+      final disparity = (_totalVioDisplacement - _totalPdrDisplacement).abs();
+      if (disparity > 3.5) {
+        _isDrifting = true;
+        _driftReason = 'Tracking displacement divergence ($disparity m)';
+      }
+    }
+
+    // 6. Smooth progress easing for rendering
+    final dt = _lastPoseTime == null ? 1 / 30 : (now - _lastPoseTime!).clamp(0.0, 0.5);
+    _lastPoseTime = now;
+    const smoothingTimeConstant = 0.35;
+    final alpha = 1.0 - exp(-dt / smoothingTimeConstant);
+    _displayedProgress = _lerp(_displayedProgress, _progress, alpha);
+
+    final finalSample = _sampleAt(_displayedProgress);
+
+    // Heading & Camera FOV smoothing
+    final renderRad = renderHeading * pi / 180.0;
+    _smoothedSin = _lerp(_smoothedSin, sin(renderRad), 0.12);
+    _smoothedCos = _lerp(_smoothedCos, cos(renderRad), 0.12);
+    _smoothedTilt = _lerp(_smoothedTilt, tilt, 0.12);
+    final smoothedHeading = (atan2(_smoothedSin!, _smoothedCos!) * 180.0 / pi + 360.0) % 360.0;
+
+    _smoothedCameraHeight = _lerp(_smoothedCameraHeight, floorHeightRaw, 0.10);
+    _smoothedFov = _lerp(_smoothedFov, cameraFovYRaw, 0.10);
+
+    // Compute overall tracking confidence
+    TrackingConfidence confidence;
+    if (!isTracking) {
+      confidence = TrackingConfidence.lost;
+    } else if (_isDrifting || floorConfidence < 0.3) {
+      confidence = TrackingConfidence.low;
+    } else if (floorConfidence >= 0.6 && isFloorDetected) {
+      confidence = TrackingConfidence.high;
+    } else {
+      confidence = TrackingConfidence.medium;
+    }
+
+    _controller.add(FusedPosition(
+      east: finalSample.east,
+      north: finalSample.north,
+      headingDegrees: smoothedHeading,
+      tiltDegrees: _smoothedTilt!,
+      progressMeters: _displayedProgress,
+      totalRouteMeters: _totalRouteDistance,
+      isFloorDetected: isFloorDetected,
+      floorHeight: _smoothedCameraHeight ?? 1.35,
+      floorConfidence: floorConfidence,
+      cameraFovY: _smoothedFov ?? 60.0,
+      arTrackingState: arTrackingState,
+      confidence: confidence,
+      isDrifting: _isDrifting,
+      driftReason: _driftReason,
+      detectedWalls: detectedWalls,
+      depthSupported: depthSupported,
+      depthAvailable: depthAvailable,
+      stepCount: _stepCount,
+      actualStrideLength: _strideLengthEstimate,
+    ));
+  }
+
+  double _lerp(double? prev, double target, double alpha) {
+    if (prev == null) return target;
+    return prev + (target - prev) * alpha;
+  }
+
+  /// Relocalizes progress to a known junction/waypoint arc-length.
+  void snapToProgress(double targetProgress) {
+    _progress = targetProgress.clamp(0.0, _totalRouteDistance);
+    _displayedProgress = _progress;
+  }
+
+  /// Processes an event directly (useful for testing or custom streams)
+  void processPoseEvent(Map<String, dynamic> map) => _onPoseEvent(map);
+
+  void dispose() {
+    stop();
+    _controller.close();
+  }
+}

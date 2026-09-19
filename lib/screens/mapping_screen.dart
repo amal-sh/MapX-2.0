@@ -51,6 +51,7 @@ class _MappingScreenState extends State<MappingScreen> {
 
   final List<PathSegment> _segments = [];
   final List<Waypoint> _waypoints = [];
+  final List<WallSegment> _recordedWalls = [];
   int _stepCount = 0;
   double _lastStepTime = 0;
   // The grace period is timed from the next pose event after a resume, so it
@@ -99,8 +100,9 @@ class _MappingScreenState extends State<MappingScreen> {
     setState(() {
       _mapping = true;
       _segments.clear();
-      _segments.add(PathSegment());
+      _segments.add(PathSegment(floor: widget.floor));
       _waypoints.clear();
+      _recordedWalls.clear();
       _stepCount = 0;
       _lastStepTime = 0;
       _peakMotion = 0;
@@ -113,6 +115,7 @@ class _MappingScreenState extends State<MappingScreen> {
 
     try {
       await _methodChannel.invokeMethod('startSession');
+      await _methodChannel.invokeMethod('startArNavigation');
     } on PlatformException catch (e) {
       if (!mounted) return;
       setState(() => _mapping = false);
@@ -160,6 +163,24 @@ class _MappingScreenState extends State<MappingScreen> {
       _recordStep(heading);
     }
 
+    // Automatically accumulate walls detected by ARCore vertical plane tracking
+    final rawWalls = map['walls'] as List<dynamic>? ?? [];
+    if (rawWalls.isNotEmpty) {
+      for (final w in rawWalls) {
+        if (w is Map) {
+          final x1 = (w['x1'] as num?)?.toDouble() ?? 0.0;
+          final z1 = (w['z1'] as num?)?.toDouble() ?? 0.0;
+          final x2 = (w['x2'] as num?)?.toDouble() ?? 0.0;
+          final z2 = (w['z2'] as num?)?.toDouble() ?? 0.0;
+          final exists = _recordedWalls.any((existing) =>
+              (existing.startEast - x1).abs() < 0.4 && (existing.startNorth - z1).abs() < 0.4);
+          if (!exists) {
+            _recordedWalls.add(WallSegment(startEast: x1, startNorth: z1, endEast: x2, endNorth: z2));
+          }
+        }
+      }
+    }
+
     setState(() {
       _isTracking = tracking;
       _isWalking = stepDetected || (now - _lastStepTime) < _stepCooldownSeconds;
@@ -178,16 +199,16 @@ class _MappingScreenState extends State<MappingScreen> {
     final List<PathNode> nodes = [];
     double currentEast = 0;
     double currentNorth = 0;
-    
-    nodes.add(PathNode(0, 0, currentEast, currentNorth));
-    
+
+    nodes.add(PathNode(0, 0, currentEast, currentNorth, floor: widget.floor));
+
     int index = 1;
     for (final segment in _segments) {
       final avgHeadingRad = segment.averageHeading * pi / 180.0;
       for (final step in segment.steps) {
         currentEast += step.length * sin(avgHeadingRad);
         currentNorth += step.length * cos(avgHeadingRad);
-        nodes.add(PathNode(index++, segment.averageHeading, currentEast, currentNorth));
+        nodes.add(PathNode(index++, segment.averageHeading, currentEast, currentNorth, floor: widget.floor));
       }
     }
     return nodes;
@@ -216,11 +237,11 @@ class _MappingScreenState extends State<MappingScreen> {
 
   void _recordStep(double heading) {
     if (_segments.isEmpty) {
-      _segments.add(PathSegment());
+      _segments.add(PathSegment(floor: widget.floor));
     }
-    _segments.last.steps.add(RawStep(heading, _stepLengthMeters));
+    _segments.last.steps.add(RawStep(heading, _stepLengthMeters, floor: widget.floor));
   }
-  
+
   Future<void> _registerTurn() async {
     setState(() {
       _isTurning = true;
@@ -244,7 +265,7 @@ class _MappingScreenState extends State<MappingScreen> {
     if (!mounted) return;
 
     setState(() {
-      _segments.add(PathSegment());
+      _segments.add(PathSegment(floor: widget.floor));
       _isTurning = false;
       _pendingGrace = true;
     });
@@ -253,6 +274,9 @@ class _MappingScreenState extends State<MappingScreen> {
   @override
   void dispose() {
     _poseSub?.cancel();
+    try {
+      _methodChannel.invokeMethod('stopArNavigation');
+    } catch (_) {}
     super.dispose();
   }
 
@@ -296,7 +320,7 @@ class _MappingScreenState extends State<MappingScreen> {
       _isAddingNode = false;
       _pendingGrace = true;
       if (label != null && label.isNotEmpty) {
-        _waypoints.add(Waypoint(_stepCount, label));
+        _waypoints.add(Waypoint(_stepCount, label, floor: widget.floor));
       }
     });
   }
@@ -314,6 +338,7 @@ class _MappingScreenState extends State<MappingScreen> {
     final mapData = {
       'segments': _segments.map((s) => s.toJson()).toList(),
       'waypoints': _waypoints.map((w) => w.toJson()).toList(),
+      'walls': _recordedWalls.map((w) => w.toJson()).toList(),
       'stepCount': _stepCount,
       'name': widget.mapName,
       'floor': widget.floor,
@@ -324,7 +349,7 @@ class _MappingScreenState extends State<MappingScreen> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Map "${widget.mapName}" saved successfully!')),
+      SnackBar(content: Text('Map "${widget.mapName}" saved successfully with ${_recordedWalls.length} detected walls!')),
     );
 
     // Stop mapping and return to dashboard
@@ -410,7 +435,7 @@ class _MappingScreenState extends State<MappingScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Steps: $_stepCount\n'
+                  'Steps: $_stepCount   Walls: ${_recordedWalls.length}\n'
                   'heading: ${_heading.toStringAsFixed(0)}°   '
                   'tilt: ${_tilt.toStringAsFixed(0)}°\n'
                   'motion: ${_motion.toStringAsFixed(2)} (Peak: ${_peakMotion.toStringAsFixed(2)})\n'
@@ -449,7 +474,7 @@ class _MappingScreenState extends State<MappingScreen> {
                           color: Colors.white,
                         ),
                         child: CustomPaint(
-                          painter: PathMapPainter(_computedNodes, _waypoints),
+                          painter: PathMapPainter(_computedNodes, _waypoints, walls: _recordedWalls),
                           child: const SizedBox.expand(),
                         ),
                       ),

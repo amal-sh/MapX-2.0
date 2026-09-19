@@ -6,8 +6,9 @@ class PathMapPainter extends CustomPainter {
   final List<PathNode> nodes;
   final List<Waypoint> waypoints;
   final List<PathNode>? routeNodes;
+  final List<WallSegment> walls;
 
-  PathMapPainter(this.nodes, this.waypoints, {this.routeNodes});
+  PathMapPainter(this.nodes, this.waypoints, {this.routeNodes, this.walls = const []});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -20,6 +21,12 @@ class PathMapPainter extends CustomPainter {
       maxEast = max(maxEast, n.east);
       minNorth = min(minNorth, n.north);
       maxNorth = max(maxNorth, n.north);
+    }
+    for (final w in walls) {
+      minEast = min(minEast, min(w.startEast, w.endEast));
+      maxEast = max(maxEast, max(w.startEast, w.endEast));
+      minNorth = min(minNorth, min(w.startNorth, w.endNorth));
+      maxNorth = max(maxNorth, max(w.startNorth, w.endNorth));
     }
 
     const minSpan = 3.0;
@@ -37,6 +44,16 @@ class PathMapPainter extends CustomPainter {
         );
 
     _paintGrid(canvas, size, scale, centreEast, centreNorth, toScreen);
+
+    // Draw walls as solid dark slate boundary lines
+    final wallPaint = Paint()
+      ..color = const Color(0xFF334155)
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = 4.5;
+    for (final w in walls) {
+      canvas.drawLine(toScreen(w.startEast, w.startNorth), toScreen(w.endEast, w.endNorth), wallPaint);
+    }
 
     final path = Path()
       ..moveTo(toScreen(nodes.first.east, nodes.first.north).dx,
