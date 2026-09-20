@@ -20,6 +20,7 @@ import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Plane
 import com.google.ar.core.TrackingState
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivityLaunchConfigs
 import io.flutter.embedding.android.FlutterActivity
 import io.github.sceneview.ar.ArSceneView
@@ -164,6 +165,15 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                         val queries = call.argument<List<Map<String, Any>>>("queries") ?: emptyList()
                         batchCheckDepthOcclusions(queries, result)
                     }
+                    "setKeepScreenOn" -> {
+                        val enabled = call.argument<Boolean>("enabled") ?: true
+                        if (enabled) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -286,6 +296,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         floorDetected = false
         arTrackingState = "NONE"
         computeBackCameraVerticalFov()?.let { cameraFovY = it }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val view = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -325,6 +336,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             findViewById<android.view.ViewGroup>(android.R.id.content).removeView(it)
         }
         cameraPreviewView = null
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     // Vertical FOV of the portrait preview = the sensor's long side, since
@@ -355,6 +367,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             sceneView.destroy()
         }
         arSceneView = null
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     // ARCore floor & wall detection and anchoring:
@@ -368,6 +381,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         arTrackingState = "INITIALIZING"
         arTrackingFailureReason = "NONE"
         sessionConfigured = false
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         arSceneView = ArSceneView(this).apply {
             planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL

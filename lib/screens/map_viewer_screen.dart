@@ -90,6 +90,22 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   bool _isNearTransition = false;
   FloorTransition? _activeTransition;
 
+  Timer? _navScreenKeepAliveTimer;
+  static const Duration _navScreenInactivityTimeout = Duration(minutes: 8);
+
+  void _resetNavScreenKeepAliveTimer() {
+    if (!_isArMode) return;
+    try {
+      platform.invokeMethod('setKeepScreenOn', {'enabled': true});
+    } catch (_) {}
+    _navScreenKeepAliveTimer?.cancel();
+    _navScreenKeepAliveTimer = Timer(_navScreenInactivityTimeout, () {
+      try {
+        platform.invokeMethod('setKeepScreenOn', {'enabled': false});
+      } catch (_) {}
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -100,6 +116,10 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
   @override
   void dispose() {
+    _navScreenKeepAliveTimer?.cancel();
+    try {
+      platform.invokeMethod('setKeepScreenOn', {'enabled': false});
+    } catch (_) {}
     _badgeTimer?.cancel();
     _depthQueryTimer?.cancel();
     _depthOcclusionManager.clear();
@@ -349,6 +369,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
           if (mounted) setState(() => _showFloorAnchoredBadge = false);
         });
       }
+
+      _resetNavScreenKeepAliveTimer();
     });
 
     _fusionEngine!.start();
@@ -358,6 +380,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         _useArCore = useArCore;
         _isArMode = true;
       });
+      _resetNavScreenKeepAliveTimer();
     }
   }
 
@@ -528,6 +551,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   }
 
   Future<void> _stopNavigation() async {
+    _navScreenKeepAliveTimer?.cancel();
     _badgeTimer?.cancel();
     _depthQueryTimer?.cancel();
     _depthOcclusionManager.clear();
@@ -541,6 +565,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _fusionEngine?.dispose();
     _fusionEngine = null;
     try {
+      await platform.invokeMethod('setKeepScreenOn', {'enabled': false});
       await platform.invokeMethod(_useArCore ? 'stopArNavigation' : 'stopCameraPreview');
     } catch (e) {
       debugPrint("AR Error: $e");
@@ -554,9 +579,12 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       final route = _routeNodes ?? const <PathNode>[];
       final allWalls = [..._walls, ..._detectedWalls];
 
-      return Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Stack(
+      return Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => _resetNavScreenKeepAliveTimer(),
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Stack(
           children: [
             // Glowing route line strictly anchored to the real floor
             if (_arReady)
@@ -796,6 +824,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
               ),
             ],
           ],
+        ),
         ),
       );
     }
