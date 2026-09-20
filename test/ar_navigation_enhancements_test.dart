@@ -220,7 +220,7 @@ void main() {
       expect(find.text('MAP'), findsOneWidget);
     });
 
-    testWidgets('ArMiniMap renders dynamic rotating North compass indicator', (tester) async {
+    testWidgets('ArMiniMap renders North compass indicator', (tester) async {
       final route = [
         PathNode(0, 0.0, 0.0, 0.0),
         PathNode(1, 0.0, 0.0, 10.0),
@@ -241,9 +241,9 @@ void main() {
         ),
       );
 
-      // Rotating compass with N needle is present
+      // Static North indicator with N is present
       expect(find.text('N'), findsOneWidget);
-      expect(find.byIcon(CupertinoIcons.arrowtriangle_up_fill), findsOneWidget);
+      expect(find.byIcon(CupertinoIcons.arrow_up), findsOneWidget);
     });
 
     testWidgets('ArPathPainter respects isFacingPath to suppress path when off-heading', (tester) async {

@@ -948,4 +948,275 @@ void main() {
       expect(directedNodes[2].heading, closeTo(90.0, 0.01));
     });
   });
+
+  group('Phone Level & Tilt Handling (In-Place Reorientation & Height Shift)', () {
+    test('Tilting phone upright (e.g. 170 deg to 180 deg) while stationary accumulates 0.00m distance', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      // 1. Initial pose: held at 170 deg tilt, stationary
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 170.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // 2. User moves phone from 170 deg to 180 deg upright over 10 frames (~300ms)
+      // Moving phone generates hand accelerometer motion (0.45) and slight arm translation (2-3cm)
+      for (var i = 1; i <= 10; i++) {
+        nano += 33333333; // 33.3ms per frame
+        final currentTilt = 170.0 + (1.0 * i);
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.002 * i,
+          'y': 0.01 * i,
+          'z': -0.005 * i, // arm swings slightly forward 5cm while tilting upright
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': currentTilt,
+          'motion': 0.45, // accelerometer activity from arm movement
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Progress must strictly remain 0.00m
+      expect(fusion.currentProgress, equals(0.0));
+
+      // Settle at 180 deg for several frames
+      for (var i = 1; i <= 5; i++) {
+        nano += 100000000;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.02,
+          'y': 0.10,
+          'z': -0.05,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 180.0,
+          'motion': 0.05,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      expect(fusion.currentProgress, equals(0.0));
+    });
+
+    test('Changing vertical phone level (raising/lowering phone in hand) accumulates 0.00m distance', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // User raises phone from chest to eye level: delta Y = +0.35m over 15 frames
+      for (var i = 1; i <= 15; i++) {
+        nano += 66666666;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.001 * i,
+          'y': 0.023 * i, // raises phone up
+          'z': -0.002 * i,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 90.0,
+          'motion': 0.40, // hand acceleration
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Height level change must NOT be counted as walking forward!
+      expect(fusion.currentProgress, equals(0.0));
+    });
+
+    test('Multiple phone tilt adjustments do NOT trigger false 2-3m PDR stride injections', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 160.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // Simulate 3 separate tilt adjustments (160 -> 180, 180 -> 165, 165 -> 180)
+      // Previously, each adjustment triggered consecutive gait peaks and injected 0.72m strides (total > 2.1m)
+      final tiltTransitions = [
+        (160.0, 180.0),
+        (180.0, 165.0),
+        (165.0, 180.0),
+      ];
+
+      for (final (startT, endT) in tiltTransitions) {
+        nano += 600000000; // gap between adjustments
+        for (var step = 1; step <= 8; step++) {
+          nano += 40000000;
+          final t = startT + (endT - startT) * (step / 8.0);
+          fusion.processPoseEvent({
+            'timestamp': nano,
+            'x': 0.005 * step,
+            'y': 0.01 * step,
+            'z': -0.008 * step,
+            'heading': 0.0,
+            'renderHeading': 0.0,
+            'tilt': t,
+            'motion': 0.50, // hand movement peak
+            'floorDetected': true,
+            'floorHeight': 1.4,
+            'floorConfidence': 0.8,
+            'cameraFovY': 60.0,
+            'arTrackingState': 'TRACKING',
+          });
+        }
+      }
+
+      // Zero false distance accumulated despite multiple hand tilt adjustments!
+      expect(fusion.currentProgress, equals(0.0));
+    });
+
+    test('Forward walking after phone tilt adjustment advances cleanly with accurate metric distance', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      // 1. Initial pose at 170 deg tilt
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 170.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // 2. Tilt phone to 180 deg
+      for (var i = 1; i <= 6; i++) {
+        nano += 50000000;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.05,
+          'z': 0.0,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 170.0 + (i * 1.66),
+          'motion': 0.45,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+      expect(fusion.currentProgress, equals(0.0));
+
+      // Settle at 180 deg
+      nano += 600000000; // 600ms cooldown
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.05,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 180.0,
+        'motion': 0.05,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+      expect(fusion.currentProgress, equals(0.0));
+
+      // 3. User physically walks forward 2.0m (4 steps of 0.5m)
+      for (var i = 1; i <= 4; i++) {
+        nano += 500000000;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.05,
+          'z': -0.5 * i,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 180.0,
+          'motion': 0.6,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Progress advances cleanly to ~2.0m!
+      expect(fusion.currentProgress, closeTo(2.0, 0.2));
+    });
+  });
 }

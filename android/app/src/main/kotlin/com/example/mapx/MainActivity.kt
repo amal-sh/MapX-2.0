@@ -59,6 +59,8 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     // investigation).
     @Volatile
     private var heading = 0f
+    @Volatile
+    private var headingInitialized = false
 
     // A magnetometer-free heading for AR rendering only: TYPE_GAME_ROTATION_VECTOR
     // (gyro+accel, no magnetic field) gives a smooth frame-to-frame delta with
@@ -373,6 +375,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         vioQw = 1f
         motionLevel = 0f
         magnitudeBaseline = SensorManager.GRAVITY_EARTH
+        headingInitialized = false
         renderHeadingInitialized = false
         lastRawGameHeadingDeg = 0f
         floorDetected = false
@@ -838,11 +841,21 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         val (headingDeg, tiltDeg) = headingAndTiltFromMatrix(rotationMatrix)
         heading = headingDeg
         tilt = tiltDeg
+        if (!headingInitialized) {
+            headingInitialized = true
+            renderHeading = headingDeg
+            renderHeadingInitialized = true
+        }
     }
 
     private fun updateGameOrientation(event: SensorEvent) {
         SensorManager.getRotationMatrixFromVector(gameRotationMatrix, event.values)
         val (rawGameHeadingDeg, _) = headingAndTiltFromMatrix(gameRotationMatrix)
+
+        if (!headingInitialized) {
+            lastRawGameHeadingDeg = rawGameHeadingDeg
+            return
+        }
 
         if (!renderHeadingInitialized) {
             renderHeading = heading
@@ -860,13 +873,13 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         renderHeading = (renderHeading + delta + 360f) % 360f
         lastRawGameHeadingDeg = rawGameHeadingDeg
 
-        // Slowly pull renderHeading back toward the true compass heading so
-        // it doesn't drift indefinitely, capped small enough per sample that
-        // the correction is never visible as a snap.
+        // Pull renderHeading back toward the true compass heading so
+        // it doesn't drift indefinitely. Use dynamic correction so large
+        // disparities (> 15°) converge rapidly.
         var correction = heading - renderHeading
         if (correction > 180f) correction -= 360f
         if (correction < -180f) correction += 360f
-        val maxCorrectionPerSample = 0.05f
+        val maxCorrectionPerSample = if (abs(correction) > 15f) 0.5f else 0.08f
         correction = correction.coerceIn(-maxCorrectionPerSample, maxCorrectionPerSample)
         renderHeading = (renderHeading + correction + 360f) % 360f
     }

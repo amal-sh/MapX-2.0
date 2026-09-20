@@ -205,7 +205,10 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     double currentEast = 0;
     double currentNorth = 0;
 
-    nodes.add(PathNode(0, 0, currentEast, currentNorth, floor: _currentFloor));
+    final initialHeading = _segments.isNotEmpty && _segments.first.steps.isNotEmpty
+        ? _segments.first.steps.first.heading
+        : 0.0;
+    nodes.add(PathNode(0, initialHeading, currentEast, currentNorth, floor: _currentFloor));
 
     int index = 1;
     for (final segment in _segments) {

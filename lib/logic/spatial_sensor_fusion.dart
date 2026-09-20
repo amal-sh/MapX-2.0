@@ -98,10 +98,19 @@ class SpatialSensorFusion {
   double _stationaryTime = 0.0;
 
   double? _lastVioX;
+  double? _lastVioY;
   double? _lastVioZ;
   double? _lastPoseTime;
   double? _lastRenderHeading;
   double _turnRateDegPerSec = 0.0;
+  double? _lastTilt;
+  double _tiltRateDegPerSec = 0.0;
+  double? _lastQx;
+  double? _lastQy;
+  double? _lastQz;
+  double? _lastQw;
+  double _angularSpeedDegPerSec = 0.0;
+  double _reorientationCooldown = 0.0;
   double _lastStepTime = 0.0;
   int _consecutiveGaitPeaks = 0;
   bool _isGaitActive = false;
@@ -110,8 +119,8 @@ class SpatialSensorFusion {
   double get currentProgress => _progress;
 
   // Smoothing filters
-  double? _smoothedSin;
-  double? _smoothedCos;
+  double? _smoothedCompSin;
+  double? _smoothedCompCos;
   double? _smoothedTilt;
   double? _smoothedCameraHeight;
   double? _smoothedFov;
@@ -269,14 +278,16 @@ class SpatialSensorFusion {
         );
         // Reset last VIO pose baseline to avoid computing a bogus jump across the tracking outage
         _lastVioX = vioX;
+        _lastVioY = vioY;
         _lastVioZ = vioZ;
       }
     }
 
-    // Turn rate tracking & pure in-place rotation detection
+    // Turn rate, tilt rate, and 3D reorientation tracking
     final dt = _lastPoseTime == null ? 1 / 30 : (now - _lastPoseTime!).clamp(0.001, 0.5);
     _lastPoseTime = now;
 
+    // A. Azimuth / Heading turn rate (horizontal yaw)
     double dHeading = 0.0;
     if (_lastRenderHeading != null) {
       dHeading = _angleDiff(renderHeading, _lastRenderHeading!).abs();
@@ -286,15 +297,91 @@ class SpatialSensorFusion {
     }
     _lastRenderHeading = renderHeading;
 
-    // Detect if user is turning/rotating in place:
-    // Sustained turn rate > 25 deg/sec or sudden frame rotation > 2.0 deg
-    final isTurningInPlace = _turnRateDegPerSec > 25.0 || dHeading > 2.0;
+    // B. Pitch / Tilt rate (holding phone upright, tilting up/down)
+    double dTilt = 0.0;
+    double instantTiltRate = 0.0;
+    if (_lastTilt != null) {
+      dTilt = (tilt - _lastTilt!).abs();
+      instantTiltRate = dTilt / dt;
+      final decay = exp(-dt / 0.15);
+      _tiltRateDegPerSec = _tiltRateDegPerSec * decay + instantTiltRate * (1.0 - decay);
+    }
+    _lastTilt = tilt;
+
+    // C. 3D Quaternion angular velocity (all 3 rotation axes combined)
+    double dAngle3D = 0.0;
+    if (hasQuaternion && _lastQx != null) {
+      final dot = (qx * _lastQx! + qy * _lastQy! + qz * _lastQz! + qw * _lastQw!).abs().clamp(0.0, 1.0);
+      dAngle3D = 2.0 * acos(dot) * 180.0 / pi;
+      final instantAngularSpeed = dAngle3D / dt;
+      final decay = exp(-dt / 0.15);
+      _angularSpeedDegPerSec = _angularSpeedDegPerSec * decay + instantAngularSpeed * (1.0 - decay);
+    }
+    if (hasQuaternion) {
+      _lastQx = qx;
+      _lastQy = qy;
+      _lastQz = qz;
+      _lastQw = qw;
+    }
+
+    // D. Vertical hand level / elevation change (raising or lowering phone without walking)
+    double dVioY = 0.0;
+    if (_lastVioY != null && _wasTracking && isTracking) {
+      dVioY = (vioY - _lastVioY!).abs();
+    }
+    _lastVioY = vioY;
+
+    // Compute raw frame horizontal displacement and speed for in-place motion gating
+    double frameDist = 0.0;
+    double instantSpeed = 0.0;
+    if (_lastVioX != null && _wasTracking && isTracking) {
+      final dx = vioX - _lastVioX!;
+      final dz = vioZ - _lastVioZ!;
+      frameDist = sqrt(dx * dx + dz * dz);
+      instantSpeed = dt > 0.0 ? frameDist / dt : 0.0;
+    }
+
+    // A user is stationary if their horizontal speed is under 0.40 m/s or frameDist < 0.015m
+    final isStationaryMotion = instantSpeed < 0.40 || frameDist < 0.015;
+
+    // Detect device manipulation states:
+    // In-place turn (yaw): sustained turn rate > 25 deg/sec or sudden frame turn > 4.5 deg
+    final isTurningInPlace = _turnRateDegPerSec > 25.0 || dHeading > 4.5;
+
+    // In-place tilt / pitch change:
+    // When stationary, detect any deliberate tilt adjustment (rate > 12 deg/s or dTilt > 0.8 deg)
+    // When physically walking, require rapid tilt > 25 deg/s so normal walking sway is never suppressed
+    final isTiltingInPlace = isStationaryMotion
+        ? (instantTiltRate > 12.0 || _tiltRateDegPerSec > 10.0 || dTilt > 0.8)
+        : (_tiltRateDegPerSec > 25.0 || dTilt > 3.5);
+
+    // In-place 3D reorientation: sustained angular speed > 28 deg/sec or sudden frame reorientation > 4.5 deg
+    final isReorientingInPlace = hasQuaternion
+        ? (_angularSpeedDegPerSec > 28.0 || dAngle3D > 4.5)
+        : (isTurningInPlace || isTiltingInPlace);
+
+    // In-place vertical level shift: vertical movement dominates horizontal movement
+    final isVerticalLevelShift = (dVioY > 0.020 && dVioY > 1.8 * frameDist);
+
+    final isActivelyAdjusting = isTurningInPlace || isTiltingInPlace || isReorientingInPlace || isVerticalLevelShift;
+
+    // Cooldown buffer: after user tilts, rotates, or shifts phone level in-place, maintain suppression
+    // unless the user walks forward (instantSpeed >= 0.50 m/s and frameDist >= 0.018m), which clears cooldown immediately.
+    final isWalkingForward = instantSpeed >= 0.50 && frameDist >= 0.018;
+    if (isActivelyAdjusting) {
+      _reorientationCooldown = 0.20;
+    } else if (isWalkingForward) {
+      _reorientationCooldown = 0.0;
+    } else if (_reorientationCooldown > 0.0) {
+      _reorientationCooldown = (_reorientationCooldown - dt).clamp(0.0, 5.0);
+    }
+    final isDeviceAdjusting = isActivelyAdjusting || (_reorientationCooldown > 0.0);
 
     // 2. Gait rhythm / step cadence detection
     bool isStepEvent = false;
-    if (isTurningInPlace) {
-      // INHIBIT STEP TRIGGERING DURING TURN-IN-PLACE:
-      // Foot shuffling, body pivoting, or arm swings while rotating around
+    if (isDeviceAdjusting) {
+      // INHIBIT STEP TRIGGERING DURING IN-PLACE TURN, TILT, OR LEVEL CHANGE:
+      // Foot shuffling, body pivoting, arm level shifts, or tilting phone upright
       // must NOT be registered as forward walking strides!
       _consecutiveGaitPeaks = 0;
       _isGaitActive = false;
@@ -321,19 +408,25 @@ class SpatialSensorFusion {
     // 3. VIO Metric Displacement & Sensor Fusion with PDR Fallback
     double deltaProgress = 0.0;
     final tangentHeadingDeg = _sampleAt(_progress).headingDeg;
-    final headingDeltaDeg = _angleDiff(renderHeading, tangentHeadingDeg);
+    final headingDeltaDeg = _angleDiff(heading, tangentHeadingDeg);
     final absHeadingDelta = headingDeltaDeg.abs();
 
-    // Facing corridor path: within +/- 45 degrees of corridor tangent.
-    final isFacingPath = absHeadingDelta <= 45.0;
-    // Facing backwards: within +/- 45 degrees of opposite corridor tangent (180°).
-    final isFacingBackwards = (absHeadingDelta - 180.0).abs() <= 45.0;
+    // Corridor alignment:
+    // When the user is facing generally along the corridor path (within +/- 45°), they receive 1.0 (100% distance).
+    // Between 45° and 75°, smooth roll-off to 0.0.
+    // Beyond 75° (facing wall / sideways), scale is 0.0 (progress inhibited).
+    // For reverse direction (180° +/- 45°), scale is -1.0.
+    final isFacingPath = absHeadingDelta <= 55.0;
 
     double corridorScale = 0.0;
-    if (isFacingPath) {
-      corridorScale = cos(absHeadingDelta * pi / 180.0);
-    } else if (isFacingBackwards) {
-      corridorScale = -cos((180.0 - absHeadingDelta) * pi / 180.0);
+    if (absHeadingDelta <= 45.0) {
+      corridorScale = 1.0;
+    } else if (absHeadingDelta <= 75.0) {
+      corridorScale = (75.0 - absHeadingDelta) / 30.0;
+    } else if ((absHeadingDelta - 180.0).abs() <= 45.0) {
+      corridorScale = -1.0;
+    } else if ((absHeadingDelta - 180.0).abs() <= 75.0) {
+      corridorScale = -((75.0 - (absHeadingDelta - 180.0).abs()) / 30.0);
     }
 
     if (isTracking) {
@@ -348,9 +441,12 @@ class SpatialSensorFusion {
           double effectiveDist = frameDist;
 
           // Camera horizontal forward vector projection & lateral arc swing filtering
-          if (isTurningInPlace) {
+          if (isDeviceAdjusting) {
             effectiveDist = 0.0;
-          } else if (hasQuaternion) {
+          } else if (frameDist < 0.015 && dVioY > 0.020) {
+            // Predominantly vertical hand movement with negligible horizontal motion
+            effectiveDist = 0.0;
+          } else if (hasQuaternion && frameDist < 0.020) {
             final fx = -2.0 * (qx * qz + qw * qy);
             final fz = -(1.0 - 2.0 * (qx * qx + qy * qy));
             final hLen = sqrt(fx * fx + fz * fz);
@@ -366,18 +462,18 @@ class SpatialSensorFusion {
             }
           }
 
-          final isPhysicallyMoving = (_isGaitActive || motion >= 0.15) && !isTurningInPlace;
+          final isPhysicallyMoving = (_isGaitActive || motion >= 0.15) && !isDeviceAdjusting;
 
           // When physically moving, accumulate frame displacements along corridor
-          // When stationary, ignore microscopic sensor jitter (< 12mm/frame)
-          if (isPhysicallyMoving || effectiveDist >= 0.012) {
+          // When stationary, ignore microscopic sensor jitter (< 10mm/frame)
+          if (isPhysicallyMoving || effectiveDist >= 0.010) {
             _subFrameVioAccumulator += effectiveDist;
             _vioDistSinceLastStep += effectiveDist;
           }
 
-          final isMoving = isPhysicallyMoving || _subFrameVioAccumulator >= 0.025;
+          final isMoving = isPhysicallyMoving || _subFrameVioAccumulator >= 0.020;
 
-          if (isMoving && _subFrameVioAccumulator > 0.0 && !isTurningInPlace) {
+          if (isMoving && _subFrameVioAccumulator > 0.0 && !isDeviceAdjusting) {
             _stationaryTime = 0.0;
             final appliedDist = _subFrameVioAccumulator;
             _totalVioDisplacement += appliedDist;
@@ -393,8 +489,11 @@ class SpatialSensorFusion {
               }
 
               // True Anti-Slippage Fallback:
-              // ONLY when facing along path corridor, NOT turning in place, and confirmed gait rhythm
-              if (_vioDistSinceLastStep < 0.15 && isFacingPath && !isTurningInPlace && _isGaitActive) {
+              // ONLY when facing along path corridor, NOT adjusting device, and confirmed gait rhythm.
+              // Note: When ARCore is tracking properly with good floor confidence, trust VIO ground truth!
+              // Anti-slippage fallback is strictly for when visual tracking is degraded.
+              final isReliableVio = isTracking && floorConfidence >= 0.35;
+              if (!isReliableVio && _vioDistSinceLastStep < 0.15 && isFacingPath && !isDeviceAdjusting && _isGaitActive) {
                 final pdrDelta = _strideLengthEstimate * corridorScale;
                 if (pdrDelta.abs() > deltaProgress.abs()) {
                   deltaProgress = pdrDelta;
@@ -403,10 +502,10 @@ class SpatialSensorFusion {
               _vioDistSinceLastStep = 0.0;
             }
           } else {
-            // Stationary deadband: phone is held still / resting or turning in place.
-            // Reset accumulator after stillness or turning to prevent integration drift.
+            // Stationary deadband: phone is held still / resting or adjusting device.
+            // Reset accumulator after stillness or device adjustment to prevent integration drift.
             _stationaryTime += dt;
-            if (_stationaryTime > 0.4 || isTurningInPlace) {
+            if (_stationaryTime > 0.4 || isDeviceAdjusting) {
               _subFrameVioAccumulator = 0.0;
             }
           }
@@ -414,7 +513,7 @@ class SpatialSensorFusion {
       }
     } else {
       // TRACKING LOST OR DEGRADED: PDR Dead-Reckoning Fallback
-      if (isStepEvent && isFacingPath && !isTurningInPlace && _isGaitActive) {
+      if (isStepEvent && isFacingPath && !isDeviceAdjusting && _isGaitActive) {
         deltaProgress = _strideLengthEstimate * corridorScale;
         _totalVioDisplacement += deltaProgress.abs();
       }
@@ -470,11 +569,12 @@ class SpatialSensorFusion {
     final finalSample = _sampleAt(_displayedProgress);
 
     // Heading & Camera FOV smoothing
-    final renderRad = renderHeading * pi / 180.0;
-    _smoothedSin = _lerp(_smoothedSin, sin(renderRad), 0.12);
-    _smoothedCos = _lerp(_smoothedCos, cos(renderRad), 0.12);
+    final compRad = heading * pi / 180.0;
+    _smoothedCompSin = _lerp(_smoothedCompSin, sin(compRad), 0.12);
+    _smoothedCompCos = _lerp(_smoothedCompCos, cos(compRad), 0.12);
+    final smoothedCompassHeading = (atan2(_smoothedCompSin!, _smoothedCompCos!) * 180.0 / pi + 360.0) % 360.0;
+
     _smoothedTilt = _lerp(_smoothedTilt, tilt, 0.12);
-    final smoothedHeading = (atan2(_smoothedSin!, _smoothedCos!) * 180.0 / pi + 360.0) % 360.0;
 
     _smoothedCameraHeight = _lerp(_smoothedCameraHeight, floorHeightRaw, 0.10);
     _smoothedFov = _lerp(_smoothedFov, cameraFovYRaw, 0.10);
@@ -494,7 +594,7 @@ class SpatialSensorFusion {
     _controller.add(FusedPosition(
       east: finalSample.east,
       north: finalSample.north,
-      headingDegrees: smoothedHeading,
+      headingDegrees: smoothedCompassHeading,
       tiltDegrees: _smoothedTilt!,
       progressMeters: _displayedProgress,
       totalRouteMeters: _totalRouteDistance,
@@ -537,15 +637,26 @@ class SpatialSensorFusion {
     _stepCount = 0;
     _strideLengthEstimate = defaultStepLengthMeters;
     _lastVioX = null;
+    _lastVioY = null;
     _lastVioZ = null;
     _lastPoseTime = null;
     _lastRenderHeading = null;
     _turnRateDegPerSec = 0.0;
+    _lastTilt = null;
+    _tiltRateDegPerSec = 0.0;
+    _lastQx = null;
+    _lastQy = null;
+    _lastQz = null;
+    _lastQw = null;
+    _angularSpeedDegPerSec = 0.0;
+    _reorientationCooldown = 0.0;
     _lastStepTime = 0.0;
     _consecutiveGaitPeaks = 0;
     _isGaitActive = false;
     _wasTracking = false;
     _subFrameVioAccumulator = 0.0;
+    _smoothedCompSin = null;
+    _smoothedCompCos = null;
     _vioDistSinceLastStep = 0.0;
     _stationaryTime = 0.0;
     _isDrifting = false;

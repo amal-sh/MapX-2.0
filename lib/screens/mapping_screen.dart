@@ -47,9 +47,17 @@ class _MappingScreenState extends State<MappingScreen> {
   // ARCore VIO & Spatial Sensor Fusion state
   final CoordinateTransform _coordinateTransform = CoordinateTransform();
   double? _lastVioX;
+  double? _lastVioY;
   double? _lastVioZ;
   double _accumulatedDistance = 0.0;
   bool _isFloorDetected = false;
+
+  double? _lastPoseTime;
+  double? _lastPoseHeading;
+  double _turnRateDegPerSec = 0.0;
+  double? _lastTilt;
+  double _tiltRateDegPerSec = 0.0;
+  double _reorientationCooldown = 0.0;
 
   final List<PathSegment> _segments = [];
   final List<Waypoint> _waypoints = [];
@@ -186,6 +194,38 @@ class _MappingScreenState extends State<MappingScreen> {
       _pendingGrace = false;
     }
 
+    final dt = _lastPoseTime == null ? 1 / 30 : (now - _lastPoseTime!).clamp(0.001, 0.5);
+    _lastPoseTime = now;
+
+    // A. Heading turn rate
+    double dHeading = 0.0;
+    if (_lastPoseHeading != null) {
+      var d = (heading - _lastPoseHeading!).abs() % 360.0;
+      if (d > 180.0) d = 360.0 - d;
+      dHeading = d;
+      final instantTurnRate = dHeading / dt;
+      final decay = exp(-dt / 0.15);
+      _turnRateDegPerSec = _turnRateDegPerSec * decay + instantTurnRate * (1.0 - decay);
+    }
+    _lastPoseHeading = heading;
+
+    // B. Pitch / Tilt rate
+    double dTilt = 0.0;
+    if (_lastTilt != null) {
+      dTilt = (tilt - _lastTilt!).abs();
+      final instantTiltRate = dTilt / dt;
+      final decay = exp(-dt / 0.15);
+      _tiltRateDegPerSec = _tiltRateDegPerSec * decay + instantTiltRate * (1.0 - decay);
+    }
+    _lastTilt = tilt;
+
+    // C. Vertical elevation change
+    double dVioY = 0.0;
+    if (_lastVioY != null && tracking) {
+      dVioY = (vioY - _lastVioY!).abs();
+    }
+    _lastVioY = vioY;
+
     // 1. Calibration: Lock initial frame to Map North (East, North)
     if (tracking && !_coordinateTransform.isCalibrated) {
       _coordinateTransform.calibrate(
@@ -199,6 +239,7 @@ class _MappingScreenState extends State<MappingScreen> {
         floorHeight: floorHeightRaw,
       );
       _lastVioX = vioX;
+      _lastVioY = vioY;
       _lastVioZ = vioZ;
     }
 
@@ -210,13 +251,30 @@ class _MappingScreenState extends State<MappingScreen> {
         final dz = vioZ - _lastVioZ!;
         final frameDist = sqrt(dx * dx + dz * dz);
 
+        // Detect in-place device adjustment:
+        final isTurningInPlace = (_turnRateDegPerSec > 35.0 || dHeading > 3.0) && frameDist < 0.020;
+        final isTiltingInPlace = (_tiltRateDegPerSec > 20.0 || dTilt > 2.5) && frameDist < 0.020;
+        final isVerticalLevelShift = (dVioY > 0.035 && dVioY > 1.5 * frameDist && frameDist < 0.020);
+        final isActivelyAdjusting = isTurningInPlace || isTiltingInPlace || isVerticalLevelShift;
+
+        if (isActivelyAdjusting) {
+          _reorientationCooldown = 0.35;
+        } else if (frameDist >= 0.020) {
+          _reorientationCooldown = 0.0; // walking forward clears cooldown immediately
+        } else if (_reorientationCooldown > 0.0) {
+          _reorientationCooldown = (_reorientationCooldown - dt).clamp(0.0, 5.0);
+        }
+        final isDeviceAdjusting = isActivelyAdjusting || (_reorientationCooldown > 0.0);
+
         // Filter out glitchy teleport jumps (> 1.2m in ~33ms)
         if (frameDist < 1.2) {
           _lastVioX = vioX;
+          _lastVioY = vioY;
           _lastVioZ = vioZ;
 
           // Automatic corridor turn detection: if heading changed > 40° from last step
-          if (_segments.isNotEmpty && _segments.last.steps.isNotEmpty) {
+          // Must NOT trigger while adjusting device in place!
+          if (!isDeviceAdjusting && _segments.isNotEmpty && _segments.last.steps.isNotEmpty) {
             final lastHeading = _segments.last.steps.last.heading;
             final diff = (heading - lastHeading).abs();
             final normDiff = diff > 180 ? 360 - diff : diff;
@@ -225,8 +283,8 @@ class _MappingScreenState extends State<MappingScreen> {
             }
           }
 
-          // Accumulate displacement if physical motion confirms movement
-          if (motion >= 0.15 || frameDist >= 0.015) {
+          // Accumulate displacement ONLY when NOT adjusting device in-place
+          if (!isDeviceAdjusting && (motion >= 0.15 || frameDist >= 0.015)) {
             _accumulatedDistance += frameDist;
             if (_accumulatedDistance >= _stepLengthMeters) {
               stepDetected = true;
@@ -239,7 +297,12 @@ class _MappingScreenState extends State<MappingScreen> {
         }
       } else {
         // PDR Fallback: Step detection using accelerometer motion thresholding
-        if (motion >= _stepMotionThreshold && (now - _lastStepTime) > _stepCooldownSeconds) {
+        // Inhibit if adjusting device in-place
+        final isTiltingInPlace = (_tiltRateDegPerSec > 20.0 || dTilt > 2.5);
+        final isTurningInPlace = (_turnRateDegPerSec > 35.0 || dHeading > 3.0);
+        final isDeviceAdjusting = isTiltingInPlace || isTurningInPlace || (_reorientationCooldown > 0.0);
+
+        if (!isDeviceAdjusting && motion >= _stepMotionThreshold && (now - _lastStepTime) > _stepCooldownSeconds) {
           stepDetected = true;
           _lastStepTime = now;
           _stepCount++;
@@ -269,7 +332,10 @@ class _MappingScreenState extends State<MappingScreen> {
     double currentEast = 0;
     double currentNorth = 0;
 
-    nodes.add(PathNode(0, 0, currentEast, currentNorth, floor: widget.floor));
+    final initialHeading = _segments.isNotEmpty && _segments.first.steps.isNotEmpty
+        ? _segments.first.steps.first.heading
+        : 0.0;
+    nodes.add(PathNode(0, initialHeading, currentEast, currentNorth, floor: widget.floor));
 
     int index = 1;
     for (final segment in _segments) {
@@ -496,7 +562,7 @@ class _MappingScreenState extends State<MappingScreen> {
                   border: Border.all(color: const Color(0xFFE5E7EB)),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.04),
+                      color: Colors.black.withValues(alpha: 0.04),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
                     ),
@@ -657,9 +723,9 @@ class _MappingScreenState extends State<MappingScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                             decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.6),
+                              color: Colors.black.withValues(alpha: 0.6),
                               borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: Colors.white.withOpacity(0.2)),
+                              border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
                             ),
                             child: const Row(
                               mainAxisSize: MainAxisSize.min,
@@ -679,12 +745,12 @@ class _MappingScreenState extends State<MappingScreen> {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.6),
+                            color: Colors.black.withValues(alpha: 0.6),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
                               color: _isTracking
-                                  ? const Color(0xFF22C55E).withOpacity(0.4)
-                                  : const Color(0xFFF59E0B).withOpacity(0.4),
+                                  ? const Color(0xFF22C55E).withValues(alpha: 0.4)
+                                  : const Color(0xFFF59E0B).withValues(alpha: 0.4),
                             ),
                           ),
                           child: Row(
@@ -721,7 +787,7 @@ class _MappingScreenState extends State<MappingScreen> {
                       height: 24,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white.withOpacity(0.6), width: 1.5),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.6), width: 1.5),
                       ),
                       child: Center(
                         child: Container(
@@ -748,9 +814,9 @@ class _MappingScreenState extends State<MappingScreen> {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                           decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.6),
+                            color: Colors.black.withValues(alpha: 0.6),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white.withOpacity(0.15)),
+                            border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
@@ -774,7 +840,7 @@ class _MappingScreenState extends State<MappingScreen> {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFF59E0B).withOpacity(0.85),
+                              color: const Color(0xFFF59E0B).withValues(alpha: 0.85),
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: const Row(
@@ -806,7 +872,7 @@ class _MappingScreenState extends State<MappingScreen> {
                 borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.18),
+                    color: Colors.black.withValues(alpha: 0.18),
                     blurRadius: 18,
                     offset: const Offset(0, -4),
                   ),
