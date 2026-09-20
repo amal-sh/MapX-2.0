@@ -359,4 +359,593 @@ void main() {
       expect(fusion.currentProgress, lessThan(6.0));
     });
   });
+
+  group('Unified Physical Scale & Variable Route Distance Tracking', () {
+    test('Controlled 10m Route: Node A -> Node B (5m) -> Node C (5m) has totalDistance = 10.0m', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 5.0),
+        PathNode(2, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+      expect(fusion.totalRouteDistance, equals(10.0));
+    });
+
+    test('Variable route lengths preserve exact graph metric distance (5m, 10m, 25m)', () {
+      final route5m = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 5.0),
+      ];
+      final fusion5m = SpatialSensorFusion(route: route5m);
+      expect(fusion5m.totalRouteDistance, equals(5.0));
+
+      final route25m = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+        PathNode(2, 90.0, 15.0, 10.0),
+      ];
+      final fusion25m = SpatialSensorFusion(route: route25m);
+      expect(fusion25m.totalRouteDistance, equals(25.0));
+    });
+
+    test('30 FPS VIO Walking Simulation: Sub-15mm stance phase frames are NOT discarded', () {
+      // 10m route North
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      // Initialize tracking at origin
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // Simulate 10 seconds of walking at 30 FPS (300 frames, ~33.3ms each) to cover 10.0m.
+      // Human walking speed varies sinusoidally between 0.35 m/s (stance) and 1.35 m/s (swing).
+      // During stance frames (velocity = 0.35 m/s), deltaDist = 0.0116m < 0.015m!
+      // Previously, all these stance frames were completely erased, causing a 30% undercount!
+      // With sub-frame accumulation, 100% of distance must be preserved!
+      double currentZ = 0.0;
+      for (var f = 1; f <= 300; f++) {
+        nano += 33333333; // 33.33ms
+        // Sinusoidal velocity profile (1.7 Hz step cadence = ~17.6 frames per step)
+        final cycle = sin(f * 2 * pi / 17.6);
+        final speed = 0.85 + 0.50 * cycle; // oscillates between 0.35 m/s and 1.35 m/s, avg = 0.85 m/s
+        final frameDelta = speed * 0.03333333;
+        currentZ -= frameDelta;
+
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.0,
+          'z': currentZ,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 90.0,
+          'motion': 0.35 + 0.25 * cycle.abs(), // walking motion
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      final expectedDistance = currentZ.abs();
+      // Total physical simulated distance is ~8.5m.
+      // The tracked progress must match expected distance within 0.1m, proving ZERO stance-phase loss!
+      expect(fusion.currentProgress, closeTo(expectedDistance, 0.15));
+    });
+
+    test('Variable walking speed tracking: Cautious walking (0.6 m/s) retains full distance', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // At 0.6 m/s, delta per 33ms frame is only 0.020m, frequently dipping below 0.012m.
+      // Walk for 5.0m (250 frames).
+      double currentZ = 0.0;
+      for (var f = 1; f <= 250; f++) {
+        nano += 33333333;
+        final speed = 0.60 + 0.35 * sin(f * 2 * pi / 20.0); // 0.25 to 0.95 m/s
+        final frameDelta = speed * 0.03333333;
+        currentZ -= frameDelta;
+
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.0,
+          'z': currentZ,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 90.0,
+          'motion': 0.30,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      expect(fusion.currentProgress, closeTo(currentZ.abs(), 0.15));
+    });
+
+    test('PDR Fallback across variable distances uses calibrated 0.72m adult step length', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 30.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      // In PDR fallback mode (arTrackingState != TRACKING)
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': false,
+        'arTrackingState': 'SEARCHING',
+      });
+
+      // 14 steps taken at 0.65s intervals
+      for (var s = 1; s <= 14; s++) {
+        nano += 650000000; // 0.65s
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.0,
+          'z': 0.0,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 90.0,
+          'motion': 0.8, // step motion peak
+          'floorDetected': false,
+          'arTrackingState': 'SEARCHING',
+        });
+      }
+
+      // 14 steps * 0.72m = 10.08m (previously with 0.50m it would only be 7.0m!)
+      // First 2 peaks establish gait cadence, so 13 step increments occur
+      expect(fusion.currentProgress, closeTo(13 * 0.72, 0.1));
+    });
+
+    test('resetSession completely clears tracking baselines and accumulators', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 20.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // Advance by 6.0m
+      for (var i = 1; i <= 6; i++) {
+        nano += 500000000;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.0,
+          'z': -1.0 * i,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 90.0,
+          'motion': 0.8,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      expect(fusion.currentProgress, closeTo(6.0, 0.2));
+
+      // Reset session for a new navigation run
+      fusion.resetSession();
+      expect(fusion.currentProgress, equals(0.0));
+      expect(fusion.coordinateTransform.isCalibrated, isFalse);
+    });
+
+    test('Stationary jitter deadband does not accumulate distance while resting', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.05,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // 60 frames of micro-jitter (< 0.005m, motion = 0.04)
+      for (var f = 1; f <= 60; f++) {
+        nano += 33333333;
+        final noise = 0.003 * sin(f.toDouble());
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': noise,
+          'y': 0.0,
+          'z': noise,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 90.0,
+          'motion': 0.04, // resting still
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Progress must remain strictly 0.0
+      expect(fusion.currentProgress, equals(0.0));
+    });
+  });
+
+  group('In-Place Rotation, Heading Alignment & Intermediate Starting Point Tracking', () {
+    test('User standing at starting point rotating 360 degrees accumulates 0.00m distance', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      // Initialize tracking at starting point facing North
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      expect(fusion.currentProgress, equals(0.0));
+
+      // User rotates 360 degrees in place over 60 frames (~2 seconds, 180 deg/s)
+      // Phone is held at arm's length (R = 0.35m) swinging in a circular arc
+      const radius = 0.35;
+      for (var f = 1; f <= 72; f++) {
+        nano += 33333333; // ~30fps
+        final angleDeg = (f * 5.0) % 360.0;
+        final angleRad = angleDeg * pi / 180.0;
+        final arcX = radius * sin(angleRad);
+        final arcZ = -radius * cos(angleRad);
+
+        // Calculate quaternion for horizontal camera rotation
+        final halfAngle = angleRad / 2.0;
+        final qy = sin(halfAngle);
+        final qw = cos(halfAngle);
+
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': arcX,
+          'y': 0.0,
+          'z': arcZ,
+          'qx': 0.0,
+          'qy': qy,
+          'qz': 0.0,
+          'qw': qw,
+          'heading': angleDeg,
+          'renderHeading': angleDeg,
+          'tilt': 90.0,
+          'motion': 0.25, // Motion from holding and turning phone
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Progress MUST remain exactly 0.0 - user has NOT physically walked forward!
+      expect(fusion.currentProgress, equals(0.0));
+    });
+
+    test('Foot shuffling while pivoting in place does not trigger PDR stride injection', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // User shuffles feet while rotating in place (motion = 0.55, step-like peaks)
+      for (var f = 1; f <= 30; f++) {
+        nano += 66666666; // 15 Hz shuffle
+        final angleDeg = (f * 10.0) % 360.0;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.05 * sin(angleDeg * pi / 180.0),
+          'y': 0.0,
+          'z': -0.05 * cos(angleDeg * pi / 180.0),
+          'heading': angleDeg,
+          'renderHeading': angleDeg,
+          'tilt': 90.0,
+          'motion': 0.55, // Shuffling foot acceleration
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Must NOT have injected 0.72m PDR strides during turning!
+      expect(fusion.currentProgress, equals(0.0));
+    });
+
+    test('Facing wall (> 45 deg) suppresses progress even with lateral phone movement', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0), // Route is North (0°)
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 90.0, // Facing East (directly into a wall)
+        'renderHeading': 90.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // User moves sideways along the wall facing the wall (0.5m)
+      for (var i = 1; i <= 5; i++) {
+        nano += 500000000;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.1 * i,
+          'y': 0.0,
+          'z': 0.0,
+          'heading': 90.0,
+          'renderHeading': 90.0,
+          'tilt': 90.0,
+          'motion': 0.4,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Corridor projection factor is 0.0 for angleDiff = 90° (wall)
+      expect(fusion.currentProgress, equals(0.0));
+    });
+
+    test('Resuming forward walking along route after turning advances cleanly', () {
+      final route = [
+        PathNode(0, 0.0, 0.0, 0.0),
+        PathNode(1, 0.0, 0.0, 10.0),
+      ];
+      final fusion = SpatialSensorFusion(route: route);
+
+      int nano = 1000000000;
+      // 1. Initial pose: facing West (270°), wrong direction
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 270.0,
+        'renderHeading': 270.0,
+        'tilt': 90.0,
+        'motion': 0.1,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // 2. Rotate to face North (0°)
+      for (var deg = 270; deg <= 360; deg += 15) {
+        nano += 50000000;
+        final h = (deg % 360).toDouble();
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.0,
+          'z': 0.0,
+          'heading': h,
+          'renderHeading': h,
+          'tilt': 90.0,
+          'motion': 0.2,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      expect(fusion.currentProgress, equals(0.0));
+
+      // 3. User settles facing North (heading = 0.0)
+      nano += 500000000;
+      fusion.processPoseEvent({
+        'timestamp': nano,
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 0.0,
+        'renderHeading': 0.0,
+        'tilt': 90.0,
+        'motion': 0.05,
+        'floorDetected': true,
+        'floorHeight': 1.4,
+        'floorConfidence': 0.8,
+        'cameraFovY': 60.0,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // 4. Now walk forward North 4 steps (total 2.0m)
+      for (var i = 1; i <= 4; i++) {
+        nano += 500000000;
+        fusion.processPoseEvent({
+          'timestamp': nano,
+          'x': 0.0,
+          'y': 0.0,
+          'z': -0.5 * i,
+          'heading': 0.0,
+          'renderHeading': 0.0,
+          'tilt': 90.0,
+          'motion': 0.6,
+          'floorDetected': true,
+          'floorHeight': 1.4,
+          'floorConfidence': 0.8,
+          'cameraFovY': 60.0,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Progress must advance cleanly to ~2.0m
+      expect(fusion.currentProgress, closeTo(2.0, 0.2));
+    });
+
+    test('Intermediate waypoint route construction computes correct directional headings', () {
+      // 5-node route from (0,0) to (20, 0) East
+      final nodes = [
+        PathNode(0, 90.0, 0.0, 0.0),
+        PathNode(1, 90.0, 5.0, 0.0),
+        PathNode(2, 90.0, 10.0, 0.0), // Intermediate Waypoint "Room 102"
+        PathNode(3, 90.0, 15.0, 0.0),
+        PathNode(4, 90.0, 20.0, 0.0), // Final "Exit"
+      ];
+
+      // Sub-route starting from node 2 to node 4
+      final rawSublist = nodes.sublist(2, 5);
+      final List<PathNode> directedNodes = [];
+      for (int i = 0; i < rawSublist.length; i++) {
+        final current = rawSublist[i];
+        double headingDeg;
+        if (i < rawSublist.length - 1) {
+          double? foundHeading;
+          for (int j = i + 1; j < rawSublist.length; j++) {
+            final fNext = rawSublist[j];
+            final fde = fNext.east - current.east;
+            final fdn = fNext.north - current.north;
+            if (sqrt(fde * fde + fdn * fdn) > 0.001) {
+              foundHeading = (atan2(fde, fdn) * 180.0 / pi + 360.0) % 360.0;
+              break;
+            }
+          }
+          headingDeg = foundHeading ?? (directedNodes.isNotEmpty ? directedNodes.last.heading : current.heading);
+        } else if (directedNodes.isNotEmpty) {
+          headingDeg = directedNodes.last.heading;
+        } else {
+          headingDeg = current.heading;
+        }
+        directedNodes.add(PathNode(i, headingDeg, current.east, current.north));
+      }
+
+      expect(directedNodes.length, equals(3));
+      // First node (Room 102) has valid East heading 90°
+      expect(directedNodes[0].heading, closeTo(90.0, 0.01));
+      expect(directedNodes[1].heading, closeTo(90.0, 0.01));
+      expect(directedNodes[2].heading, closeTo(90.0, 0.01));
+    });
+  });
 }

@@ -132,22 +132,40 @@ class _ArMiniMapState extends State<ArMiniMap> {
                               ),
                             ),
 
-                            // North Compass Tag
+                            // Dynamic Rotating Compass needle pointing toward True North
                             Positioned(
-                              bottom: 4,
-                              left: 8,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.5),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: const Text(
-                                  'N ↑',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 8,
-                                    fontWeight: FontWeight.bold,
+                              bottom: 6,
+                              left: 6,
+                              child: Transform.rotate(
+                                angle: -widget.userHeadingDegrees * math.pi / 180.0,
+                                child: Container(
+                                  width: 22,
+                                  height: 22,
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.65),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.white24, width: 0.8),
+                                  ),
+                                  child: const Center(
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          CupertinoIcons.arrowtriangle_up_fill,
+                                          size: 8,
+                                          color: Color(0xFFEF4444),
+                                        ),
+                                        Text(
+                                          'N',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 7,
+                                            fontWeight: FontWeight.w900,
+                                            height: 1.0,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -188,7 +206,7 @@ class _MiniMapPainter extends CustomPainter {
 
   _MiniMapPainter({
     required this.route,
-    required this.walls,
+    this.walls = const [],
     required this.turnPoints,
     required this.userEast,
     required this.userNorth,
@@ -201,77 +219,79 @@ class _MiniMapPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (route.isEmpty) return;
 
-    // 1. Compute bounds of route + user + walls with padding
-    double minE = route.first.east;
-    double maxE = route.first.east;
-    double minN = route.first.north;
-    double maxN = route.first.north;
+    final centerX = size.width / 2;
+    final centerY = size.height * 0.58; // Center user slightly below middle for extended forward visibility
 
+    final headingRad = userHeadingDegrees * math.pi / 180.0;
+    final cosH = math.cos(headingRad);
+    final sinH = math.sin(headingRad);
+
+    // Compute viewing scale focused on route around the user
+    double maxDistFromUser = 12.0;
     for (final node in route) {
-      minE = math.min(minE, node.east);
-      maxE = math.max(maxE, node.east);
-      minN = math.min(minN, node.north);
-      maxN = math.max(maxN, node.north);
+      final d = math.sqrt(math.pow(node.east - userEast, 2) + math.pow(node.north - userNorth, 2));
+      if (d > maxDistFromUser) {
+        maxDistFromUser = d;
+      }
     }
-    minE = math.min(minE, userEast);
-    maxE = math.max(maxE, userEast);
-    minN = math.min(minN, userNorth);
-    maxN = math.max(maxN, userNorth);
+    final viewRadius = maxDistFromUser.clamp(12.0, 32.0);
+    final scale = (math.min(size.width, size.height) / 2 - 16.0) / viewRadius;
 
-    const padMeters = 2.0;
-    final spanE = math.max(maxE - minE, 4.0) + padMeters * 2;
-    final spanN = math.max(maxN - minN, 4.0) + padMeters * 2;
-    final centerE = (minE + maxE) / 2;
-    final centerN = (minN + maxN) / 2;
+    // Transforms world Map (East, North) to user-centric rotating heading-up screen coordinates
+    Offset toScreen(double east, double north) {
+      final de = east - userEast;
+      final dn = north - userNorth;
+      // Heading-up rotation: forward is straight ahead on the screen (-Y)
+      final forward = dn * cosH + de * sinH;
+      final right = de * cosH - dn * sinH;
+      return Offset(
+        centerX + right * scale,
+        centerY - forward * scale,
+      );
+    }
 
-    const screenPadding = 18.0;
-    final scale = math.min(
-      (size.width - 2 * screenPadding) / spanE,
-      (size.height - 2 * screenPadding) / spanN,
+    // 1. Draw subtle forward Field-of-View beam from user's current orientation
+    final fovPath = Path()
+      ..moveTo(centerX, centerY)
+      ..lineTo(centerX - 35, centerY - 55)
+      ..lineTo(centerX + 35, centerY - 55)
+      ..close();
+    canvas.drawPath(
+      fovPath,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+          colors: [
+            Colors.white.withValues(alpha: 0.10),
+            Colors.white.withValues(alpha: 0.0),
+          ],
+        ).createShader(Rect.fromLTWH(centerX - 35, centerY - 55, 70, 55)),
     );
 
-    Offset toScreen(double east, double north) {
-      return Offset(
-        size.width / 2 + (east - centerE) * scale,
-        size.height / 2 - (north - centerN) * scale,
-      );
-    }
-
-    // 2. Draw Mapped Walls
-    final wallPaint = Paint()
-      ..color = const Color(0xFF475569).withValues(alpha: 0.70)
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
-    for (final w in walls) {
-      canvas.drawLine(
-        toScreen(w.startEast, w.startNorth),
-        toScreen(w.endEast, w.endNorth),
-        wallPaint,
-      );
-    }
-
-    // 3. Draw Full Route Background Line (unrevealed context)
+    // 2. Draw Full Route Background Line (unrevealed context, rotating with heading)
     final fullRoutePath = Path();
-    fullRoutePath.moveTo(toScreen(route.first.east, route.first.north).dx, toScreen(route.first.east, route.first.north).dy);
+    final p0 = toScreen(route.first.east, route.first.north);
+    fullRoutePath.moveTo(p0.dx, p0.dy);
     for (var i = 1; i < route.length; i++) {
       final p = toScreen(route[i].east, route[i].north);
       fullRoutePath.lineTo(p.dx, p.dy);
     }
 
-    // Dim route line
     canvas.drawPath(
       fullRoutePath,
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.22)
+        ..color = Colors.white.withValues(alpha: 0.20)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0,
+        ..strokeWidth = 2.0
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
     );
 
-    // 4. Highlight currently revealed segment
-    // Calculate cumulative distances
+    // 3. Highlight currently revealed segment
     double accum = 0.0;
     final revealedPath = Path();
-    revealedPath.moveTo(toScreen(route.first.east, route.first.north).dx, toScreen(route.first.east, route.first.north).dy);
+    revealedPath.moveTo(p0.dx, p0.dy);
 
     for (var i = 1; i < route.length; i++) {
       final prev = route[i - 1];
@@ -280,84 +300,77 @@ class _MiniMapPainter extends CustomPainter {
       accum += d;
 
       if (accum <= revealedEndDistance + 0.5) {
-        revealedPath.lineTo(toScreen(cur.east, cur.north).dx, toScreen(cur.east, cur.north).dy);
+        final p = toScreen(cur.east, cur.north);
+        revealedPath.lineTo(p.dx, p.dy);
       } else {
-        // Interpolate last point
         final overflow = accum - revealedEndDistance;
         final t = (d > 0.001) ? (1.0 - (overflow / d)).clamp(0.0, 1.0) : 1.0;
         final interE = prev.east + (cur.east - prev.east) * t;
         final interN = prev.north + (cur.north - prev.north) * t;
-        revealedPath.lineTo(toScreen(interE, interN).dx, toScreen(interE, interN).dy);
+        final p = toScreen(interE, interN);
+        revealedPath.lineTo(p.dx, p.dy);
         break;
       }
     }
 
-    // Glow under revealed line
+    // Glowing active revealed route
     canvas.drawPath(
       revealedPath,
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.30)
+        ..color = Colors.white.withValues(alpha: 0.28)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.5
+        ..strokeWidth = 4.0
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0),
     );
 
-    // Active revealed path line
     canvas.drawPath(
       revealedPath,
       Paint()
         ..color = Colors.white
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0
-        ..strokeCap = StrokeCap.round,
+        ..strokeWidth = 2.2
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
     );
 
-    // 5. Draw Turn Points (Junction Markers)
+    // 4. Draw Turn Points (Junction Markers)
     final turnPaint = Paint()
-      ..color = const Color(0xFFD4D4D8)
+      ..color = const Color(0xFFE4E4E7)
       ..style = PaintingStyle.fill;
+    final turnBorder = Paint()
+      ..color = Colors.black
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
+
     for (final tp in turnPoints) {
       if (tp.nodeIndex < route.length) {
         final node = route[tp.nodeIndex];
-        canvas.drawCircle(toScreen(node.east, node.north), 2.5, turnPaint);
+        final pt = toScreen(node.east, node.north);
+        canvas.drawCircle(pt, 2.5, turnPaint);
+        canvas.drawCircle(pt, 2.5, turnBorder);
       }
     }
 
-    // 6. Draw Start & Destination Markers
+    // 5. Draw Start & Destination Markers
     final startPt = toScreen(route.first.east, route.first.north);
     canvas.drawCircle(startPt, 4.0, Paint()..color = Colors.white);
     canvas.drawCircle(startPt, 2.0, Paint()..color = Colors.black);
 
     final destPt = toScreen(route.last.east, route.last.north);
-    canvas.drawCircle(destPt, 4.0, Paint()..color = Colors.white);
-    canvas.drawCircle(destPt, 2.0, Paint()..color = const Color(0xFF52525B));
+    canvas.drawCircle(destPt, 4.5, Paint()..color = const Color(0xFFEF4444));
+    canvas.drawCircle(destPt, 2.0, Paint()..color = Colors.white);
 
-    // 7. Draw Live User Position with Triangular Directional Arrow Marker
-    final userPos = toScreen(userEast, userNorth);
-    final headingRad = userHeadingDegrees * math.pi / 180.0;
+    // 6. Draw User Chevron Arrow (Centered and ALWAYS pointing UP in Heading-Up Mode)
+    final userPos = Offset(centerX, centerY);
+    const tipDist = 10.0;
+    const backDist = 6.0;
+    const sideDist = 5.5;
+    const notchDist = 3.0;
 
-    final cosH = math.cos(headingRad);
-    final sinH = math.sin(headingRad);
-
-    // Tip: points along heading direction
-    const tipDist = 11.5;
-    final tip = Offset(userPos.dx + sinH * tipDist, userPos.dy - cosH * tipDist);
-
-    // Wings: swept back and flared out
-    const backDist = 7.0;
-    const sideDist = 6.5;
-    final leftWing = Offset(
-      userPos.dx - sinH * backDist - cosH * sideDist,
-      userPos.dy + cosH * backDist - sinH * sideDist,
-    );
-    final rightWing = Offset(
-      userPos.dx - sinH * backDist + cosH * sideDist,
-      userPos.dy + cosH * backDist + sinH * sideDist,
-    );
-
-    // Indented center notch creating a classic navigation arrow
-    const notchDist = 3.5;
-    final notch = Offset(userPos.dx - sinH * notchDist, userPos.dy + cosH * notchDist);
+    final tip = Offset(userPos.dx, userPos.dy - tipDist);
+    final leftWing = Offset(userPos.dx - sideDist, userPos.dy + backDist);
+    final rightWing = Offset(userPos.dx + sideDist, userPos.dy + backDist);
+    final notch = Offset(userPos.dx, userPos.dy + notchDist);
 
     final arrowPath = Path()
       ..moveTo(tip.dx, tip.dy)
@@ -366,25 +379,25 @@ class _MiniMapPainter extends CustomPainter {
       ..lineTo(leftWing.dx, leftWing.dy)
       ..close();
 
-    // Subtle drop shadow for high contrast on any background
+    // Shadow
     canvas.drawPath(
       arrowPath,
       Paint()
-        ..color = Colors.black.withValues(alpha: 0.65)
+        ..color = Colors.black.withValues(alpha: 0.60)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
     );
 
-    // Dark outer border
+    // Border
     canvas.drawPath(
       arrowPath,
       Paint()
         ..color = Colors.black
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0
+        ..strokeWidth = 1.8
         ..strokeJoin = StrokeJoin.round,
     );
 
-    // Crisp white arrow body
+    // Body
     canvas.drawPath(
       arrowPath,
       Paint()
@@ -392,10 +405,10 @@ class _MiniMapPainter extends CustomPainter {
         ..style = PaintingStyle.fill,
     );
 
-    // Center pivot dot marking exact physical coordinate
+    // Center pivot dot
     canvas.drawCircle(
       userPos,
-      1.8,
+      1.5,
       Paint()..color = Colors.black,
     );
   }

@@ -25,7 +25,8 @@ class _MappingScreenState extends State<MappingScreen> {
   static const _methodChannel = MethodChannel('mapx/arcore');
   static const _poseChannel = EventChannel('mapx/arcore_pose');
 
-  static const double _stepLengthMeters = 0.5;
+  static const double _stepLengthMeters = 0.5; // for VIO node discretization
+  static const double _defaultPdrStepLengthMeters = 0.72; // calibrated adult human step length
   static const double _stepMotionThreshold = 0.4;
   static const double _stepCooldownSeconds = 0.7;
   static const double _resumeGraceSeconds = 0.6;
@@ -37,14 +38,10 @@ class _MappingScreenState extends State<MappingScreen> {
   bool _isAddingNode = false;
   bool _isPaused = false;
   bool _isTracking = false;
-  bool _isWalking = false;
   
   double _heading = 0;
-  double _renderHeading = 0;
   double _tilt = 0;
-  double _motion = 0;
   double _peakMotion = 0;
-  int _features = 0;
   int _minFeatures = 1 << 30;
 
   // ARCore VIO & Spatial Sensor Fusion state
@@ -53,9 +50,6 @@ class _MappingScreenState extends State<MappingScreen> {
   double? _lastVioZ;
   double _accumulatedDistance = 0.0;
   bool _isFloorDetected = false;
-  double _floorHeight = 1.35;
-  double _floorConfidence = 0.0;
-  String _arTrackingState = 'INITIALIZING';
 
   final List<PathSegment> _segments = [];
   final List<Waypoint> _waypoints = [];
@@ -136,7 +130,6 @@ class _MappingScreenState extends State<MappingScreen> {
       _lastStepTime = 0;
       _peakMotion = 0;
       _minFeatures = 1 << 30;
-      _isWalking = false;
       _isTurning = false;
       _isPaused = false;
       _pendingGrace = true;
@@ -144,8 +137,6 @@ class _MappingScreenState extends State<MappingScreen> {
       _lastVioZ = null;
       _accumulatedDistance = 0.0;
       _isFloorDetected = false;
-      _floorConfidence = 0.0;
-      _arTrackingState = 'INITIALIZING';
     });
 
     try {
@@ -168,7 +159,6 @@ class _MappingScreenState extends State<MappingScreen> {
       onError: (Object error) {
         setState(() {
           _isTracking = false;
-          _arTrackingState = 'ERROR';
         });
       },
     );
@@ -190,8 +180,6 @@ class _MappingScreenState extends State<MappingScreen> {
 
     final isFloorDetected = (map['floorDetected'] as bool?) ?? false;
     final floorHeightRaw = (map['floorHeight'] as num?)?.toDouble() ?? 1.35;
-    final floorConfidence = (map['floorConfidence'] as num?)?.toDouble() ?? 0.0;
-    final arTrackingState = (map['arTrackingState'] as String?) ?? (tracking ? 'TRACKING' : 'SEARCHING');
 
     if (_pendingGrace) {
       _resumeAt = now + _resumeGraceSeconds;
@@ -255,7 +243,7 @@ class _MappingScreenState extends State<MappingScreen> {
           stepDetected = true;
           _lastStepTime = now;
           _stepCount++;
-          _recordStep(heading);
+          _recordStep(heading, length: _defaultPdrStepLengthMeters);
         }
       }
     }
@@ -266,19 +254,12 @@ class _MappingScreenState extends State<MappingScreen> {
 
     setState(() {
       _isTracking = tracking;
-      _arTrackingState = arTrackingState;
       _isFloorDetected = isFloorDetected;
-      _floorHeight = floorHeightRaw;
-      _floorConfidence = floorConfidence;
-      _isWalking = stepDetected || (now - _lastStepTime) < _stepCooldownSeconds;
       _heading = heading;
-      _renderHeading = renderHeading;
       _tilt = tilt;
-      _motion = motion;
       if (motion > _peakMotion) {
         _peakMotion = motion;
       }
-      _features = features;
       _minFeatures = min(_minFeatures, features);
     });
   }
@@ -312,22 +293,15 @@ class _MappingScreenState extends State<MappingScreen> {
     return total;
   }
 
-  double get _directDistance {
-    final nodes = _computedNodes;
-    if (nodes.length < 2) return 0;
-    return _horizontalDistance(nodes.last.east, nodes.last.north,
-        nodes.first.east, nodes.first.north);
-  }
-
   double _horizontalDistance(double ax, double az, double bx, double bz) {
     return sqrt(pow(ax - bx, 2) + pow(az - bz, 2));
   }
 
-  void _recordStep(double heading) {
+  void _recordStep(double heading, {double? length}) {
     if (_segments.isEmpty) {
       _segments.add(PathSegment(floor: widget.floor));
     }
-    _segments.last.steps.add(RawStep(heading, _stepLengthMeters, floor: widget.floor));
+    _segments.last.steps.add(RawStep(heading, length ?? _stepLengthMeters, floor: widget.floor));
   }
 
   Future<void> _registerTurn() async {
@@ -411,6 +385,13 @@ class _MappingScreenState extends State<MappingScreen> {
         const SnackBar(content: Text('Cannot save an empty map.')),
       );
       return;
+    }
+
+    // Save any remainder distance at the end of the route so physical distance is precisely preserved
+    if (_accumulatedDistance > 0.05 && _segments.isNotEmpty) {
+      _segments.last.steps.add(RawStep(_heading, _accumulatedDistance, floor: widget.floor));
+      _stepCount++;
+      _accumulatedDistance = 0.0;
     }
 
     // Stop AR session cleanly and release screen wake lock

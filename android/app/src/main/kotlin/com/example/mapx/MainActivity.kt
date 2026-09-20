@@ -149,6 +149,10 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                         startArSessionFlow()
                         result.success(null)
                     }
+                    "stopSession" -> {
+                        stopSession()
+                        result.success(null)
+                    }
                     "getDetectedWalls" -> {
                         result.success(detectedWalls)
                     }
@@ -357,9 +361,40 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         return null
     }
 
+    private fun stopSession() {
+        unregisterSensors()
+        poseLoopRunning = false
+        vioX = 0f
+        vioY = 0f
+        vioZ = 0f
+        vioQx = 0f
+        vioQy = 0f
+        vioQz = 0f
+        vioQw = 1f
+        motionLevel = 0f
+        magnitudeBaseline = SensorManager.GRAVITY_EARTH
+        renderHeadingInitialized = false
+        lastRawGameHeadingDeg = 0f
+        floorDetected = false
+        floorHeight = 1.35f
+        floorConfidence = 0f
+        detectedWalls = emptyList()
+        arTrackingState = "INITIALIZING"
+        arTrackingFailureReason = "NONE"
+    }
+
     private fun stopArNavigationMode() {
         floorDetected = false
         arTrackingState = "STOPPED"
+        vioX = 0f
+        vioY = 0f
+        vioZ = 0f
+        vioQx = 0f
+        vioQy = 0f
+        vioQz = 0f
+        vioQw = 1f
+        motionLevel = 0f
+        detectedWalls = emptyList()
         arSceneView?.let { sceneView ->
             lifecycle.removeObserver(sceneView)
             val rootView = findViewById<android.view.ViewGroup>(android.R.id.content)
@@ -381,6 +416,15 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         arTrackingState = "INITIALIZING"
         arTrackingFailureReason = "NONE"
         sessionConfigured = false
+        vioX = 0f
+        vioY = 0f
+        vioZ = 0f
+        vioQx = 0f
+        vioQy = 0f
+        vioQz = 0f
+        vioQw = 1f
+        motionLevel = 0f
+        detectedWalls = emptyList()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         arSceneView = ArSceneView(this).apply {

@@ -67,6 +67,7 @@ class SpatialSensorFusion {
   static const double minStepCadenceSeconds = 0.50;
   static const double maxStepCadenceSeconds = 1.40;
   static const double stepMotionThreshold = 0.30;
+  static const double defaultStepLengthMeters = 0.72; // Standard adult human step length (meters)
 
   final List<PathNode> route;
   final List<WallSegment> mappedWalls;
@@ -89,11 +90,18 @@ class SpatialSensorFusion {
   double _totalVioDisplacement = 0.0;
   double _totalPdrDisplacement = 0.0;
   int _stepCount = 0;
-  double _strideLengthEstimate = 0.55;
+  double _strideLengthEstimate = defaultStepLengthMeters;
+
+  // Sub-frame VIO displacement accumulator to eliminate stance-phase metric loss
+  double _subFrameVioAccumulator = 0.0;
+  double _vioDistSinceLastStep = 0.0;
+  double _stationaryTime = 0.0;
 
   double? _lastVioX;
   double? _lastVioZ;
   double? _lastPoseTime;
+  double? _lastRenderHeading;
+  double _turnRateDegPerSec = 0.0;
   double _lastStepTime = 0.0;
   int _consecutiveGaitPeaks = 0;
   bool _isGaitActive = false;
@@ -184,6 +192,11 @@ class SpatialSensorFusion {
     final vioX = (map['x'] as num).toDouble();
     final vioY = (map['y'] as num).toDouble();
     final vioZ = (map['z'] as num).toDouble();
+    final bool hasQuaternion = map.containsKey('qx') && map['qx'] != null;
+    final qx = (map['qx'] as num?)?.toDouble() ?? 0.0;
+    final qy = (map['qy'] as num?)?.toDouble() ?? 0.0;
+    final qz = (map['qz'] as num?)?.toDouble() ?? 0.0;
+    final qw = (map['qw'] as num?)?.toDouble() ?? 1.0;
     final heading = (map['heading'] as num).toDouble();
     final renderHeading = (map['renderHeading'] as num?)?.toDouble() ?? heading;
     final tilt = (map['tilt'] as num).toDouble();
@@ -260,9 +273,33 @@ class SpatialSensorFusion {
       }
     }
 
+    // Turn rate tracking & pure in-place rotation detection
+    final dt = _lastPoseTime == null ? 1 / 30 : (now - _lastPoseTime!).clamp(0.001, 0.5);
+    _lastPoseTime = now;
+
+    double dHeading = 0.0;
+    if (_lastRenderHeading != null) {
+      dHeading = _angleDiff(renderHeading, _lastRenderHeading!).abs();
+      final instantTurnRate = dHeading / dt;
+      final decay = exp(-dt / 0.15);
+      _turnRateDegPerSec = _turnRateDegPerSec * decay + instantTurnRate * (1.0 - decay);
+    }
+    _lastRenderHeading = renderHeading;
+
+    // Detect if user is turning/rotating in place:
+    // Sustained turn rate > 25 deg/sec or sudden frame rotation > 2.0 deg
+    final isTurningInPlace = _turnRateDegPerSec > 25.0 || dHeading > 2.0;
+
     // 2. Gait rhythm / step cadence detection
     bool isStepEvent = false;
-    if (motion >= stepMotionThreshold) {
+    if (isTurningInPlace) {
+      // INHIBIT STEP TRIGGERING DURING TURN-IN-PLACE:
+      // Foot shuffling, body pivoting, or arm swings while rotating around
+      // must NOT be registered as forward walking strides!
+      _consecutiveGaitPeaks = 0;
+      _isGaitActive = false;
+      _subFrameVioAccumulator = 0.0;
+    } else if (motion >= stepMotionThreshold) {
       final gap = now - _lastStepTime;
       if (gap >= minStepCadenceSeconds) {
         _consecutiveGaitPeaks =
@@ -284,47 +321,105 @@ class SpatialSensorFusion {
     // 3. VIO Metric Displacement & Sensor Fusion with PDR Fallback
     double deltaProgress = 0.0;
     final tangentHeadingDeg = _sampleAt(_progress).headingDeg;
-    final isForward = _angleDiff(renderHeading, tangentHeadingDeg).abs() < 90.0;
+    final headingDeltaDeg = _angleDiff(renderHeading, tangentHeadingDeg);
+    final absHeadingDelta = headingDeltaDeg.abs();
+
+    // Facing corridor path: within +/- 45 degrees of corridor tangent.
+    final isFacingPath = absHeadingDelta <= 45.0;
+    // Facing backwards: within +/- 45 degrees of opposite corridor tangent (180°).
+    final isFacingBackwards = (absHeadingDelta - 180.0).abs() <= 45.0;
+
+    double corridorScale = 0.0;
+    if (isFacingPath) {
+      corridorScale = cos(absHeadingDelta * pi / 180.0);
+    } else if (isFacingBackwards) {
+      corridorScale = -cos((180.0 - absHeadingDelta) * pi / 180.0);
+    }
 
     if (isTracking) {
       // ACTIVE TRACKING: High-precision metric VIO drives progression
       if (_lastVioX != null && _wasTracking) {
         final dx = vioX - _lastVioX!;
         final dz = vioZ - _lastVioZ!;
-        final deltaDist = sqrt(dx * dx + dz * dz);
+        final frameDist = sqrt(dx * dx + dz * dz);
 
         // Filter out glitchy VIO jumps (> 1.5m in one ~33ms frame)
-        if (deltaDist < 1.5) {
-          // Stationary deadband: filter out microscopic sensor jitter or stepping in place when stopped.
-          // When moving (deltaDist >= 0.015m), advance progress fully without artificial damping throttling.
-          if (deltaDist >= 0.015) {
-            _totalVioDisplacement += deltaDist;
-            deltaProgress = isForward ? deltaDist : -deltaDist;
+        if (frameDist < 1.5) {
+          double effectiveDist = frameDist;
 
-            // Adapt stride length estimate when walking with active VIO
-            if (_isGaitActive && deltaDist > 0.15) {
-              _strideLengthEstimate = _strideLengthEstimate * 0.9 + deltaDist * 0.1;
-            }
-
-            // Anti-Slippage Fallback: If device moved but VIO is slipping (< 0.12m)
-            // while a physical step occurred, supplement with PDR (e.g. featureless wall)
-            if (isStepEvent && deltaDist < 0.12) {
-              final pdrDelta = isForward ? _strideLengthEstimate : -_strideLengthEstimate;
-              if (pdrDelta.abs() > deltaProgress.abs()) {
-                deltaProgress = pdrDelta;
+          // Camera horizontal forward vector projection & lateral arc swing filtering
+          if (isTurningInPlace) {
+            effectiveDist = 0.0;
+          } else if (hasQuaternion) {
+            final fx = -2.0 * (qx * qz + qw * qy);
+            final fz = -(1.0 - 2.0 * (qx * qx + qy * qy));
+            final hLen = sqrt(fx * fx + fz * fz);
+            if (hLen > 0.05) {
+              final hfx = fx / hLen;
+              final hfz = fz / hLen;
+              final fwdComp = dx * hfx + dz * hfz;
+              final latComp = (dx * (-hfz) + dz * hfx).abs();
+              // If motion is predominantly lateral arc swing with negligible forward component, suppress it
+              if (latComp > 2.0 * fwdComp.abs() && fwdComp.abs() < 0.015) {
+                effectiveDist = 0.0;
               }
+            }
+          }
+
+          final isPhysicallyMoving = (_isGaitActive || motion >= 0.15) && !isTurningInPlace;
+
+          // When physically moving, accumulate frame displacements along corridor
+          // When stationary, ignore microscopic sensor jitter (< 12mm/frame)
+          if (isPhysicallyMoving || effectiveDist >= 0.012) {
+            _subFrameVioAccumulator += effectiveDist;
+            _vioDistSinceLastStep += effectiveDist;
+          }
+
+          final isMoving = isPhysicallyMoving || _subFrameVioAccumulator >= 0.025;
+
+          if (isMoving && _subFrameVioAccumulator > 0.0 && !isTurningInPlace) {
+            _stationaryTime = 0.0;
+            final appliedDist = _subFrameVioAccumulator;
+            _totalVioDisplacement += appliedDist;
+            deltaProgress = appliedDist * corridorScale;
+            _subFrameVioAccumulator = 0.0;
+
+            // Online VIO Step Calibration:
+            // When a confirmed physical step occurs and VIO was tracking cleanly across the step,
+            // adapt the step length estimate using the distance accumulated across the full step duration.
+            if (isStepEvent) {
+              if (_vioDistSinceLastStep >= 0.40 && _vioDistSinceLastStep <= 1.25) {
+                _strideLengthEstimate = _strideLengthEstimate * 0.85 + _vioDistSinceLastStep * 0.15;
+              }
+
+              // True Anti-Slippage Fallback:
+              // ONLY when facing along path corridor, NOT turning in place, and confirmed gait rhythm
+              if (_vioDistSinceLastStep < 0.15 && isFacingPath && !isTurningInPlace && _isGaitActive) {
+                final pdrDelta = _strideLengthEstimate * corridorScale;
+                if (pdrDelta.abs() > deltaProgress.abs()) {
+                  deltaProgress = pdrDelta;
+                }
+              }
+              _vioDistSinceLastStep = 0.0;
+            }
+          } else {
+            // Stationary deadband: phone is held still / resting or turning in place.
+            // Reset accumulator after stillness or turning to prevent integration drift.
+            _stationaryTime += dt;
+            if (_stationaryTime > 0.4 || isTurningInPlace) {
+              _subFrameVioAccumulator = 0.0;
             }
           }
         }
       }
     } else {
       // TRACKING LOST OR DEGRADED: PDR Dead-Reckoning Fallback
-      // When ARCore loses tracking, steps from the accelerometer maintain progress
-      // along the corridor so navigation remains persistent and never loses distance traveled!
-      if (isStepEvent) {
-        deltaProgress = isForward ? _strideLengthEstimate : -_strideLengthEstimate;
+      if (isStepEvent && isFacingPath && !isTurningInPlace && _isGaitActive) {
+        deltaProgress = _strideLengthEstimate * corridorScale;
         _totalVioDisplacement += deltaProgress.abs();
       }
+      _vioDistSinceLastStep = 0.0;
+      _subFrameVioAccumulator = 0.0;
     }
 
     _lastVioX = vioX;
@@ -368,8 +463,6 @@ class SpatialSensorFusion {
     }
 
     // 6. Smooth progress easing for rendering
-    final dt = _lastPoseTime == null ? 1 / 30 : (now - _lastPoseTime!).clamp(0.0, 0.5);
-    _lastPoseTime = now;
     const smoothingTimeConstant = 0.35;
     final alpha = 1.0 - exp(-dt / smoothingTimeConstant);
     _displayedProgress = _lerp(_displayedProgress, _progress, alpha);
@@ -434,6 +527,31 @@ class SpatialSensorFusion {
 
   /// Processes an event directly (useful for testing or custom streams)
   void processPoseEvent(Map<String, dynamic> map) => _onPoseEvent(map);
+
+  /// Resets all session tracking, accumulators, and PDR baselines for a new navigation run.
+  void resetSession({double startProgress = 0.0}) {
+    _progress = startProgress.clamp(0.0, _totalRouteDistance);
+    _displayedProgress = _progress;
+    _totalVioDisplacement = 0.0;
+    _totalPdrDisplacement = 0.0;
+    _stepCount = 0;
+    _strideLengthEstimate = defaultStepLengthMeters;
+    _lastVioX = null;
+    _lastVioZ = null;
+    _lastPoseTime = null;
+    _lastRenderHeading = null;
+    _turnRateDegPerSec = 0.0;
+    _lastStepTime = 0.0;
+    _consecutiveGaitPeaks = 0;
+    _isGaitActive = false;
+    _wasTracking = false;
+    _subFrameVioAccumulator = 0.0;
+    _vioDistSinceLastStep = 0.0;
+    _stationaryTime = 0.0;
+    _isDrifting = false;
+    _driftReason = '';
+    coordinateTransform.reset();
+  }
 
   void dispose() {
     stop();

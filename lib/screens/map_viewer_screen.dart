@@ -166,9 +166,20 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       final stepCount = mapData['stepCount'] as int? ?? 0;
       final floor = mapData['floor'] as int? ?? 0;
 
-      if (waypoints.isEmpty && stepCount > 0) {
-        waypoints.add(Waypoint(0, 'Start', floor: floor));
+      if (!waypoints.any((w) => w.globalStepIndex == 0)) {
+        waypoints.insert(0, Waypoint(0, 'Start', floor: floor));
+      }
+      if (stepCount > 0 && !waypoints.any((w) => w.globalStepIndex == stepCount)) {
         waypoints.add(Waypoint(stepCount, 'End', floor: floor));
+      }
+
+      Waypoint? defaultStart = _startLocation;
+      Waypoint? defaultDest = _destination;
+      if (defaultStart == null && waypoints.isNotEmpty) {
+        defaultStart = waypoints.first;
+      }
+      if (defaultDest == null && waypoints.length >= 2) {
+        defaultDest = waypoints.last;
       }
 
       setState(() {
@@ -178,6 +189,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         _transitions = transitions;
         _stepCount = stepCount;
         _currentFloor = floor;
+        _startLocation = defaultStart;
+        _destination = defaultDest;
         _isLoading = false;
       });
     } else {
@@ -242,11 +255,18 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       final current = rawSublist[i];
       double headingDeg;
       if (i < rawSublist.length - 1) {
-        final next = rawSublist[i + 1];
-        final de = next.east - current.east;
-        final dn = next.north - current.north;
-        if (sqrt(de * de + dn * dn) > 0.001) {
-          headingDeg = (atan2(de, dn) * 180.0 / pi + 360.0) % 360.0;
+        double? foundHeading;
+        for (int j = i + 1; j < rawSublist.length; j++) {
+          final fNext = rawSublist[j];
+          final fde = fNext.east - current.east;
+          final fdn = fNext.north - current.north;
+          if (sqrt(fde * fde + fdn * fdn) > 0.001) {
+            foundHeading = (atan2(fde, fdn) * 180.0 / pi + 360.0) % 360.0;
+            break;
+          }
+        }
+        if (foundHeading != null) {
+          headingDeg = foundHeading;
         } else if (directedNodes.isNotEmpty) {
           headingDeg = directedNodes.last.heading;
         } else {
@@ -553,8 +573,10 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       final isTrackingReliable = _trackingConfidence != TrackingConfidence.low &&
           _trackingConfidence != TrackingConfidence.lost;
 
-      final isInArrivalZone = spatialDist <= 1.2 &&
-          remainingAlongRoute <= 1.8 &&
+      final hasMovedFromStart = _routeTotalDistance < 1.5 || _liveProgress >= 0.8;
+      final isInArrivalZone = hasMovedFromStart &&
+          spatialDist <= 1.2 &&
+          remainingAlongRoute <= 1.5 &&
           isLineOfSightClear &&
           isTrackingReliable;
 
@@ -604,6 +626,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _isFloorDetected = false;
     _floorConfidence = 0.0;
     _showFloorAnchoredBadge = false;
+    final bool didArrive = _hasArrivedAtDestination;
     _hasArrivedAtDestination = false;
     _arrivalZoneEntryTime = null;
     _isFacingPath = true;
@@ -620,10 +643,33 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     try {
       await platform.invokeMethod('setKeepScreenOn', {'enabled': false});
       await platform.invokeMethod(_useArCore ? 'stopArNavigation' : 'stopCameraPreview');
+      await platform.invokeMethod('stopSession');
     } catch (e) {
       debugPrint("AR Error: $e");
     }
-    if (mounted) setState(() => _isArMode = false);
+
+    if (mounted) {
+      setState(() {
+        _isArMode = false;
+        _liveProgress = 0.0;
+        // If user arrived at destination, advance start to that destination for the next navigation
+        if (didArrive && _destination != null) {
+          _startLocation = _destination;
+          _destination = null;
+        }
+        if (_startLocation != null) {
+          final nodes = _computedNodes;
+          final idx = _startLocation!.globalStepIndex.clamp(0, nodes.isEmpty ? 0 : nodes.length - 1);
+          if (nodes.isNotEmpty) {
+            _liveEast = nodes[idx].east;
+            _liveNorth = nodes[idx].north;
+            _liveHeading = nodes[idx].heading;
+          }
+        }
+      });
+      // Refresh map data to ensure latest waypoints are in sync
+      _loadMapData();
+    }
   }
 
   @override

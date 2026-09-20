@@ -52,7 +52,7 @@ class LivePosition {
 class LivePositionTracker {
   static const _poseChannel = EventChannel('mapx/arcore_pose');
 
-  static const double stepLengthMeters = 0.5;
+  static const double stepLengthMeters = 0.72;
   static const double stepMotionThreshold = 0.4;
 
   // A genuine footstep is followed by another one at a fairly steady
