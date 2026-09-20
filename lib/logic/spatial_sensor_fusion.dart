@@ -64,9 +64,9 @@ class FusedPosition {
 class SpatialSensorFusion {
   static const _poseChannel = EventChannel('mapx/arcore_pose');
 
-  static const double minStepCadenceSeconds = 0.65;
-  static const double maxStepCadenceSeconds = 1.30;
-  static const double stepMotionThreshold = 0.40;
+  static const double minStepCadenceSeconds = 0.50;
+  static const double maxStepCadenceSeconds = 1.40;
+  static const double stepMotionThreshold = 0.30;
 
   final List<PathNode> route;
   final List<WallSegment> mappedWalls;
@@ -145,15 +145,29 @@ class SpatialSensorFusion {
         final u = span > 0.0001 ? (clamped - _cumulativeDistances[i]) / span : 0.0;
         final a = route[i];
         final b = route[i + 1];
+        final de = b.east - a.east;
+        final dn = b.north - a.north;
+        final segHeading = (sqrt(de * de + dn * dn) > 0.001)
+            ? (atan2(de, dn) * 180.0 / pi + 360.0) % 360.0
+            : b.heading;
         return (
-          east: a.east + (b.east - a.east) * u,
-          north: a.north + (b.north - a.north) * u,
-          headingDeg: b.heading,
+          east: a.east + de * u,
+          north: a.north + dn * u,
+          headingDeg: segHeading,
         );
       }
     }
     final last = route.last;
-    return (east: last.east, north: last.north, headingDeg: last.heading);
+    double lastHeading = last.heading;
+    if (route.length >= 2) {
+      final prev = route[route.length - 2];
+      final de = last.east - prev.east;
+      final dn = last.north - prev.north;
+      if (sqrt(de * de + dn * dn) > 0.001) {
+        lastHeading = (atan2(de, dn) * 180.0 / pi + 360.0) % 360.0;
+      }
+    }
+    return (east: last.east, north: last.north, headingDeg: lastHeading);
   }
 
   double _angleDiff(double a, double b) {
@@ -281,22 +295,24 @@ class SpatialSensorFusion {
 
         // Filter out glitchy VIO jumps (> 1.5m in one ~33ms frame)
         if (deltaDist < 1.5) {
-          _totalVioDisplacement += deltaDist;
+          // Stationary deadband: filter out microscopic sensor jitter or stepping in place when stopped.
+          // When moving (deltaDist >= 0.015m), advance progress fully without artificial damping throttling.
+          if (deltaDist >= 0.015) {
+            _totalVioDisplacement += deltaDist;
+            deltaProgress = isForward ? deltaDist : -deltaDist;
 
-          final damping = _isGaitActive ? 1.0 : 0.08;
-          deltaProgress = (isForward ? deltaDist : -deltaDist) * damping;
+            // Adapt stride length estimate when walking with active VIO
+            if (_isGaitActive && deltaDist > 0.15) {
+              _strideLengthEstimate = _strideLengthEstimate * 0.9 + deltaDist * 0.1;
+            }
 
-          // Adapt stride length estimate when walking with active VIO
-          if (_isGaitActive && deltaDist > 0.15) {
-            _strideLengthEstimate = _strideLengthEstimate * 0.9 + deltaDist * 0.1;
-          }
-
-          // Anti-Slippage Fallback: If a step occurred but VIO barely moved (< 0.10m),
-          // supplement with PDR (e.g. featureless wall, dark corridor)
-          if (isStepEvent && deltaDist < 0.10) {
-            final pdrDelta = (isForward ? _strideLengthEstimate : -_strideLengthEstimate) * 0.75;
-            if (pdrDelta.abs() > deltaProgress.abs()) {
-              deltaProgress = pdrDelta;
+            // Anti-Slippage Fallback: If device moved but VIO is slipping (< 0.12m)
+            // while a physical step occurred, supplement with PDR (e.g. featureless wall)
+            if (isStepEvent && deltaDist < 0.12) {
+              final pdrDelta = isForward ? _strideLengthEstimate : -_strideLengthEstimate;
+              if (pdrDelta.abs() > deltaProgress.abs()) {
+                deltaProgress = pdrDelta;
+              }
             }
           }
         }
@@ -326,7 +342,7 @@ class SpatialSensorFusion {
     // Check A: Wall Penetration
     final currentPos = _sampleAt(_progress);
     final allWalls = [...mappedWalls, ...detectedWalls];
-    final wallBlocked = WallCollisionValidator.isLineOfSightBlocked(
+    final wallBlocked = (proposedProgress != _progress) && WallCollisionValidator.isLineOfSightBlocked(
       startEast: currentPos.east,
       startNorth: currentPos.north,
       targetEast: proposedPos.east,
@@ -343,11 +359,11 @@ class SpatialSensorFusion {
     }
 
     // Check B: VIO vs PDR Disparity check
-    if (_totalVioDisplacement > 8.0 && _totalPdrDisplacement > 4.0) {
+    if (_totalVioDisplacement > 10.0 && _totalPdrDisplacement > 6.0) {
       final disparity = (_totalVioDisplacement - _totalPdrDisplacement).abs();
-      if (disparity > 3.5) {
+      if (disparity > 5.0 && disparity > 0.4 * _totalVioDisplacement) {
         _isDrifting = true;
-        _driftReason = 'Tracking displacement divergence ($disparity m)';
+        _driftReason = 'Tracking displacement divergence (${disparity.toStringAsFixed(1)}m)';
       }
     }
 

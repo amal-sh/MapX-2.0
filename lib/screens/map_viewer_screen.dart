@@ -225,11 +225,49 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     if (startIdx >= nodes.length) startIdx = nodes.length - 1;
     if (endIdx >= nodes.length) endIdx = nodes.length - 1;
 
+    final List<PathNode> rawSublist;
     if (startIdx <= endIdx) {
-      return nodes.sublist(startIdx, endIdx + 1);
+      rawSublist = nodes.sublist(startIdx, endIdx + 1);
     } else {
-      return nodes.sublist(endIdx, startIdx + 1).reversed.toList();
+      rawSublist = nodes.sublist(endIdx, startIdx + 1).reversed.toList();
     }
+    if (rawSublist.isEmpty) return null;
+
+    // Explicitly reconstruct the active navigation route so that every node has
+    // the correct directional heading pointing along the route toward the destination.
+    // This ensures that whether navigating Start -> Destination or Destination -> Start,
+    // the initial node and all subsequent nodes have valid forward traversal headings.
+    final List<PathNode> directedNodes = [];
+    for (int i = 0; i < rawSublist.length; i++) {
+      final current = rawSublist[i];
+      double headingDeg;
+      if (i < rawSublist.length - 1) {
+        final next = rawSublist[i + 1];
+        final de = next.east - current.east;
+        final dn = next.north - current.north;
+        if (sqrt(de * de + dn * dn) > 0.001) {
+          headingDeg = (atan2(de, dn) * 180.0 / pi + 360.0) % 360.0;
+        } else if (directedNodes.isNotEmpty) {
+          headingDeg = directedNodes.last.heading;
+        } else {
+          headingDeg = current.heading;
+        }
+      } else if (directedNodes.isNotEmpty) {
+        headingDeg = directedNodes.last.heading;
+      } else {
+        headingDeg = current.heading;
+      }
+
+      directedNodes.add(PathNode(
+        i,
+        headingDeg,
+        current.east,
+        current.north,
+        floor: current.floor,
+        elevation: current.elevation,
+      ));
+    }
+    return directedNodes;
   }
 
   bool get _arReady => !_useArCore || (_isFloorDetected && _floorConfidence >= 0.35);
@@ -261,14 +299,22 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       return;
     }
 
+    // Reset tracking and session state completely for clean start
     _isFloorDetected = false;
     _floorConfidence = 0.0;
     _showFloorAnchoredBadge = false;
     _hasArrivedAtDestination = false;
     _arrivalZoneEntryTime = null;
+    _detectedWalls = [];
+    _isDrifting = false;
+    _driftReason = '';
+    _trackingConfidence = TrackingConfidence.medium;
+
+    // Explicitly anchor initial physical position to the starting node coordinate
     _liveEast = route.first.east;
     _liveNorth = route.first.north;
-    _liveProgress = 0;
+    _liveProgress = 0.0;
+    _liveHeading = route.first.heading;
     _turnInstructions = computeTurnInstructions(route);
 
     _segmentManager = RouteSegmentManager(route: route);
@@ -559,11 +605,18 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _floorConfidence = 0.0;
     _showFloorAnchoredBadge = false;
     _hasArrivedAtDestination = false;
+    _arrivalZoneEntryTime = null;
     _isFacingPath = true;
+    _isDrifting = false;
+    _driftReason = '';
+    _detectedWalls = [];
     await _fusionSub?.cancel();
     _fusionSub = null;
     _fusionEngine?.dispose();
     _fusionEngine = null;
+    _relocalizer = null;
+    _segmentManager = null;
+    _floorTransitionManager = null;
     try {
       await platform.invokeMethod('setKeepScreenOn', {'enabled': false});
       await platform.invokeMethod(_useArCore ? 'stopArNavigation' : 'stopCameraPreview');

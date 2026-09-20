@@ -153,15 +153,29 @@ class LivePositionTracker {
         final u = span > 0.0001 ? (clamped - _distances[i]) / span : 0.0;
         final a = route[i];
         final b = route[i + 1];
+        final de = b.east - a.east;
+        final dn = b.north - a.north;
+        final segHeading = (sqrt(de * de + dn * dn) > 0.001)
+            ? (atan2(de, dn) * 180.0 / pi + 360.0) % 360.0
+            : b.heading;
         return (
-          east: a.east + (b.east - a.east) * u,
-          north: a.north + (b.north - a.north) * u,
-          headingDeg: b.heading,
+          east: a.east + de * u,
+          north: a.north + dn * u,
+          headingDeg: segHeading,
         );
       }
     }
     final last = route.last;
-    return (east: last.east, north: last.north, headingDeg: last.heading);
+    double lastHeading = last.heading;
+    if (route.length >= 2) {
+      final prev = route[route.length - 2];
+      final de = last.east - prev.east;
+      final dn = last.north - prev.north;
+      if (sqrt(de * de + dn * dn) > 0.001) {
+        lastHeading = (atan2(de, dn) * 180.0 / pi + 360.0) % 360.0;
+      }
+    }
+    return (east: last.east, north: last.north, headingDeg: lastHeading);
   }
 
   double _angleDiffDeg(double a, double b) {

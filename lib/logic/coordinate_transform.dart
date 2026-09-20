@@ -25,6 +25,15 @@ class CoordinateTransform {
         _ty = ty,
         _tz = tz;
 
+  /// Resets calibration state.
+  void reset() {
+    _isCalibrated = false;
+    _yawOffsetRad = 0.0;
+    _tx = 0.0;
+    _ty = 0.0;
+    _tz = 0.0;
+  }
+
   /// Initializes the transformation matrix matching the user's starting map
   /// position (startEast, startNorth) and route heading (startHeadingDeg)
   /// with the active ARCore camera pose (camX, camY, camZ, camYawDeg)

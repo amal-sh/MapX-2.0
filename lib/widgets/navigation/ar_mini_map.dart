@@ -332,48 +332,70 @@ class _MiniMapPainter extends CustomPainter {
     canvas.drawCircle(destPt, 4.0, Paint()..color = Colors.white);
     canvas.drawCircle(destPt, 2.0, Paint()..color = const Color(0xFF52525B));
 
-    // 7. Draw Live User Position and Heading Indicator
+    // 7. Draw Live User Position with Triangular Directional Arrow Marker
     final userPos = toScreen(userEast, userNorth);
     final headingRad = userHeadingDegrees * math.pi / 180.0;
 
-    // Direction Cone
-    final coneLength = 14.0;
-    const coneHalfAngle = 28.0 * math.pi / 180.0;
-    final leftAngle = headingRad - coneHalfAngle;
-    final rightAngle = headingRad + coneHalfAngle;
+    final cosH = math.cos(headingRad);
+    final sinH = math.sin(headingRad);
 
-    final conePath = Path()
-      ..moveTo(userPos.dx, userPos.dy)
-      ..lineTo(
-        userPos.dx + math.sin(leftAngle) * coneLength,
-        userPos.dy - math.cos(leftAngle) * coneLength,
-      )
-      ..lineTo(
-        userPos.dx + math.sin(rightAngle) * coneLength,
-        userPos.dy - math.cos(rightAngle) * coneLength,
-      )
+    // Tip: points along heading direction
+    const tipDist = 11.5;
+    final tip = Offset(userPos.dx + sinH * tipDist, userPos.dy - cosH * tipDist);
+
+    // Wings: swept back and flared out
+    const backDist = 7.0;
+    const sideDist = 6.5;
+    final leftWing = Offset(
+      userPos.dx - sinH * backDist - cosH * sideDist,
+      userPos.dy + cosH * backDist - sinH * sideDist,
+    );
+    final rightWing = Offset(
+      userPos.dx - sinH * backDist + cosH * sideDist,
+      userPos.dy + cosH * backDist + sinH * sideDist,
+    );
+
+    // Indented center notch creating a classic navigation arrow
+    const notchDist = 3.5;
+    final notch = Offset(userPos.dx - sinH * notchDist, userPos.dy + cosH * notchDist);
+
+    final arrowPath = Path()
+      ..moveTo(tip.dx, tip.dy)
+      ..lineTo(rightWing.dx, rightWing.dy)
+      ..lineTo(notch.dx, notch.dy)
+      ..lineTo(leftWing.dx, leftWing.dy)
       ..close();
 
+    // Subtle drop shadow for high contrast on any background
     canvas.drawPath(
-      conePath,
+      arrowPath,
       Paint()
-        ..shader = RadialGradient(
-          colors: [
-            Colors.white.withValues(alpha: 0.40),
-            Colors.white.withValues(alpha: 0.0),
-          ],
-        ).createShader(Rect.fromCircle(center: userPos, radius: coneLength)),
+        ..color = Colors.black.withValues(alpha: 0.65)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
     );
 
-    // User Position Dot
-    canvas.drawCircle(
-      userPos,
-      4.5,
-      Paint()..color = Colors.white,
+    // Dark outer border
+    canvas.drawPath(
+      arrowPath,
+      Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..strokeJoin = StrokeJoin.round,
     );
+
+    // Crisp white arrow body
+    canvas.drawPath(
+      arrowPath,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.fill,
+    );
+
+    // Center pivot dot marking exact physical coordinate
     canvas.drawCircle(
       userPos,
-      2.5,
+      1.8,
       Paint()..color = Colors.black,
     );
   }

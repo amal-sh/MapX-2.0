@@ -38,6 +38,11 @@ class RelocalizationManager {
       return;
     }
 
+    // Inhibit relocalization when starting navigation (progress < 2.0m) to preserve starting point anchoring!
+    if (currentPos.progressMeters < 2.0) {
+      return;
+    }
+
     // 1. Check if user is near a turn / junction node in the route
     final currentProgress = currentPos.progressMeters;
     final nearestJunction = _findNearestJunctionNode(currentProgress);
@@ -64,34 +69,47 @@ class RelocalizationManager {
     );
 
     if (isOutOfBounds || currentPos.isDrifting) {
-      // Find closest node on route
-      var closestIdx = 0;
+      // Find closest node on route WITHIN LOCAL NEIGHBORHOOD ONLY (e.g. +/- 3.5 meters)
+      // This strictly prevents teleporting to distant segments or halfway across the route!
+      var closestIdx = -1;
       var minD = double.infinity;
+      double accumDist = 0.0;
+
       for (var i = 0; i < route.length; i++) {
-        final d = pow(route[i].east - currentPos.east, 2) +
-            pow(route[i].north - currentPos.north, 2);
-        if (d < minD) {
-          minD = d.toDouble();
-          closestIdx = i;
+        if (i > 0) {
+          final p = route[i - 1];
+          final c = route[i];
+          accumDist += sqrt(pow(c.east - p.east, 2) + pow(c.north - p.north, 2));
+        }
+        // Check if node is within local progress window (+/- 3.5m)
+        if ((accumDist - currentProgress).abs() <= 3.5) {
+          final d = pow(route[i].east - currentPos.east, 2) +
+              pow(route[i].north - currentPos.north, 2);
+          if (d < minD) {
+            minD = d.toDouble();
+            closestIdx = i;
+          }
         }
       }
 
-      // Compute distance to closest node along route
-      double distAlongRoute = 0.0;
-      for (var i = 1; i <= closestIdx; i++) {
-        final p = route[i - 1];
-        final c = route[i];
-        distAlongRoute += sqrt(pow(c.east - p.east, 2) + pow(c.north - p.north, 2));
-      }
+      if (closestIdx >= 0) {
+        // Compute distance to closest node along route
+        double distAlongRoute = 0.0;
+        for (var i = 1; i <= closestIdx; i++) {
+          final p = route[i - 1];
+          final c = route[i];
+          distAlongRoute += sqrt(pow(c.east - p.east, 2) + pow(c.north - p.north, 2));
+        }
 
-      fusionEngine.snapToProgress(distAlongRoute);
-      onRelocalized?.call(RelocalizationEvent(
-        reason: currentPos.driftReason.isNotEmpty
-            ? currentPos.driftReason
-            : 'Boundary correction to centerline',
-        correctedProgress: distAlongRoute,
-        previousProgress: currentProgress,
-      ));
+        fusionEngine.snapToProgress(distAlongRoute);
+        onRelocalized?.call(RelocalizationEvent(
+          reason: currentPos.driftReason.isNotEmpty
+              ? currentPos.driftReason
+              : 'Boundary correction to centerline',
+          correctedProgress: distAlongRoute,
+          previousProgress: currentProgress,
+        ));
+      }
     }
   }
 
