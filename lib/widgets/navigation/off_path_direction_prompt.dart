@@ -6,11 +6,13 @@ import 'package:flutter/material.dart';
 class OffPathDirectionPrompt extends StatefulWidget {
   final double deltaDegrees; // signed: negative = turn left, positive = turn right
   final String turnDirection; // 'left' or 'right'
+  final bool isAtTurn; // true if user is at the exact decision/turn vertex
 
   const OffPathDirectionPrompt({
     super.key,
     required this.deltaDegrees,
     required this.turnDirection,
+    this.isAtTurn = false,
   });
 
   @override
@@ -100,7 +102,9 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         Text(
-                          isLeft ? 'TURN LEFT ${angle.toStringAsFixed(0)}°' : 'TURN RIGHT ${angle.toStringAsFixed(0)}°',
+                          widget.isAtTurn
+                              ? (isLeft ? 'TURN LEFT NOW' : 'TURN RIGHT NOW')
+                              : (isLeft ? 'TURN LEFT ${angle.toStringAsFixed(0)}°' : 'TURN RIGHT ${angle.toStringAsFixed(0)}°'),
                           style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.w800,
@@ -109,9 +113,11 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                           ),
                         ),
                         const SizedBox(height: 2),
-                        const Text(
-                          'Face towards path to continue',
-                          style: TextStyle(
+                        Text(
+                          widget.isAtTurn
+                              ? 'Turn at the corner to follow path'
+                              : 'Face towards path to continue',
+                          style: const TextStyle(
                             color: Color(0xFFA1A1AA),
                             fontSize: 12,
                             fontWeight: FontWeight.w500,

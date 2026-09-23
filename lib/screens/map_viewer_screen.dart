@@ -74,6 +74,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   bool _isFacingPath = true;
   double _offPathAngleDelta = 0.0;
   String _turnDirection = 'straight';
+  bool _isAtTurn = false;
 
   // Progressive path reveal
   double _revealedEndDistance = 0.0;
@@ -390,6 +391,11 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
       final revealedEnd = _segmentManager?.computeRevealedEndDistance(pos.progressMeters) ?? (pos.progressMeters + 8.0);
 
+      final currentSeg = _segmentManager?.getSegmentForProgress(pos.progressMeters);
+      final upcomingTurn = currentSeg?.upcomingTurn;
+      final distToTurn = upcomingTurn != null ? (upcomingTurn.distance - pos.progressMeters) : null;
+      final isAtTurn = distToTurn != null && distToTurn.abs() <= 0.6;
+
       setState(() {
         _liveEast = pos.east;
         _liveNorth = pos.north;
@@ -406,6 +412,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         _isFacingPath = facingEval.isFacingPath;
         _offPathAngleDelta = facingEval.deltaDegrees;
         _turnDirection = facingEval.turnDirection;
+        _isAtTurn = isAtTurn;
         _revealedEndDistance = revealedEnd;
 
         if (pos.detectedWalls.isNotEmpty) {
@@ -606,6 +613,14 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
             : instr.angleDeltaDeg > 0
                 ? CupertinoIcons.arrow_turn_up_right
                 : CupertinoIcons.arrow_turn_up_left;
+        if (distToTurn <= 0.6) {
+          return (
+            title: '${instr.label} now',
+            subtitle: 'Turn ${instr.angleDeltaDeg > 0 ? "right" : "left"} here',
+            icon: icon,
+          );
+        }
+
         return (
           title: instr.label,
           subtitle: 'in ${distToTurn.toStringAsFixed(0)}m',
@@ -794,6 +809,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   child: OffPathDirectionPrompt(
                     deltaDegrees: _offPathAngleDelta,
                     turnDirection: _turnDirection,
+                    isAtTurn: _isAtTurn,
                   ),
                 ),
               ),

@@ -49,8 +49,13 @@ class _MappingScreenState extends State<MappingScreen> {
   double? _lastVioX;
   double? _lastVioY;
   double? _lastVioZ;
-  double _accumulatedDistance = 0.0;
   bool _isFloorDetected = false;
+
+  // Real metric VIO keyframing in map coordinates (East, North)
+  double _lastNodeEast = 0.0;
+  double _lastNodeNorth = 0.0;
+  double _currentMapEast = 0.0;
+  double _currentMapNorth = 0.0;
 
   double? _lastPoseTime;
   double? _lastPoseHeading;
@@ -142,8 +147,13 @@ class _MappingScreenState extends State<MappingScreen> {
       _isPaused = false;
       _pendingGrace = true;
       _lastVioX = null;
+      _lastVioY = null;
       _lastVioZ = null;
-      _accumulatedDistance = 0.0;
+      _lastNodeEast = 0.0;
+      _lastNodeNorth = 0.0;
+      _currentMapEast = 0.0;
+      _currentMapNorth = 0.0;
+      _coordinateTransform.reset();
       _isFloorDetected = false;
     });
 
@@ -229,8 +239,8 @@ class _MappingScreenState extends State<MappingScreen> {
     // 1. Calibration: Lock initial frame to Map North (East, North)
     if (tracking && !_coordinateTransform.isCalibrated) {
       _coordinateTransform.calibrate(
-        startEast: 0.0,
-        startNorth: 0.0,
+        startEast: _lastNodeEast,
+        startNorth: _lastNodeNorth,
         startHeadingDeg: heading,
         camX: vioX,
         camY: vioY,
@@ -241,15 +251,22 @@ class _MappingScreenState extends State<MappingScreen> {
       _lastVioX = vioX;
       _lastVioY = vioY;
       _lastVioZ = vioZ;
+      _currentMapEast = _lastNodeEast;
+      _currentMapNorth = _lastNodeNorth;
     }
 
-    // 2. Hybrid VIO + PDR Odometry
+    // 2. Hybrid VIO Spatial Keyframing + PDR Fallback
     bool stepDetected = false;
     if (!_isTurning && !_isAddingNode && !_isPaused && now >= _resumeAt) {
-      if (tracking && _lastVioX != null) {
+      if (tracking && _coordinateTransform.isCalibrated && _lastVioX != null) {
         final dx = vioX - _lastVioX!;
         final dz = vioZ - _lastVioZ!;
         final frameDist = sqrt(dx * dx + dz * dz);
+
+        // Update real map coordinates from 3D VIO
+        final mapPos = _coordinateTransform.worldToMap(vioX, vioZ);
+        _currentMapEast = mapPos.east;
+        _currentMapNorth = mapPos.north;
 
         // Detect in-place device adjustment:
         final isTurningInPlace = (_turnRateDegPerSec > 35.0 || dHeading > 3.0) && frameDist < 0.020;
@@ -266,33 +283,43 @@ class _MappingScreenState extends State<MappingScreen> {
         }
         final isDeviceAdjusting = isActivelyAdjusting || (_reorientationCooldown > 0.0);
 
-        // Filter out glitchy teleport jumps (> 1.2m in ~33ms)
-        if (frameDist < 1.2) {
+        // Filter out glitchy teleport jumps (> 1.5m in ~33ms)
+        if (frameDist < 1.5) {
           _lastVioX = vioX;
           _lastVioY = vioY;
           _lastVioZ = vioZ;
 
-          // Automatic corridor turn detection: if heading changed > 40° from last step
+          // Euclidean distance from last dropped keyframe node
+          final dEast = mapPos.east - _lastNodeEast;
+          final dNorth = mapPos.north - _lastNodeNorth;
+          final distFromLastNode = sqrt(dEast * dEast + dNorth * dNorth);
+
+          // Automatic corridor turn detection: if heading changed > 35° from last recorded step
           // Must NOT trigger while adjusting device in place!
           if (!isDeviceAdjusting && _segments.isNotEmpty && _segments.last.steps.isNotEmpty) {
             final lastHeading = _segments.last.steps.last.heading;
-            final diff = (heading - lastHeading).abs();
+            final diff = (heading - lastHeading).abs() % 360.0;
             final normDiff = diff > 180 ? 360 - diff : diff;
-            if (normDiff > 40.0) {
+            if (normDiff > 35.0) {
+              // Commit distance walked up to the corner vertex before starting new segment
+              if (distFromLastNode >= 0.15) {
+                _recordStep(heading, length: distFromLastNode);
+                _stepCount++;
+                _lastNodeEast = mapPos.east;
+                _lastNodeNorth = mapPos.north;
+              }
               _segments.add(PathSegment(floor: widget.floor));
             }
           }
 
-          // Accumulate displacement ONLY when NOT adjusting device in-place
-          if (!isDeviceAdjusting && (motion >= 0.15 || frameDist >= 0.015)) {
-            _accumulatedDistance += frameDist;
-            if (_accumulatedDistance >= _stepLengthMeters) {
-              stepDetected = true;
-              _lastStepTime = now;
-              _stepCount++;
-              _recordStep(heading);
-              _accumulatedDistance -= _stepLengthMeters;
-            }
+          // Spatial keyframing: drop a node when user has physically traversed >= _stepLengthMeters
+          if (!isDeviceAdjusting && distFromLastNode >= _stepLengthMeters) {
+            stepDetected = true;
+            _lastStepTime = now;
+            _stepCount++;
+            _recordStep(heading, length: distFromLastNode);
+            _lastNodeEast = mapPos.east;
+            _lastNodeNorth = mapPos.north;
           }
         }
       } else {
@@ -307,6 +334,11 @@ class _MappingScreenState extends State<MappingScreen> {
           _lastStepTime = now;
           _stepCount++;
           _recordStep(heading, length: _defaultPdrStepLengthMeters);
+          final rad = heading * pi / 180.0;
+          _lastNodeEast += _defaultPdrStepLengthMeters * sin(rad);
+          _lastNodeNorth += _defaultPdrStepLengthMeters * cos(rad);
+          _currentMapEast = _lastNodeEast;
+          _currentMapNorth = _lastNodeNorth;
         }
       }
     }
@@ -356,6 +388,13 @@ class _MappingScreenState extends State<MappingScreen> {
       total += _horizontalDistance(nodes[i].east, nodes[i].north,
           nodes[i - 1].east, nodes[i - 1].north);
     }
+    // Include live progress toward next keyframe
+    if (_isTracking && _coordinateTransform.isCalibrated) {
+      final liveEast = _currentMapEast - _lastNodeEast;
+      final liveNorth = _currentMapNorth - _lastNodeNorth;
+      final liveDist = sqrt(liveEast * liveEast + liveNorth * liveNorth);
+      total += liveDist.clamp(0.0, _stepLengthMeters);
+    }
     return total;
   }
 
@@ -374,6 +413,19 @@ class _MappingScreenState extends State<MappingScreen> {
     setState(() {
       _isTurning = true;
     });
+
+    // Commit distance walked up to the corner vertex before starting new corridor segment
+    if (_isTracking && _coordinateTransform.isCalibrated) {
+      final remEast = _currentMapEast - _lastNodeEast;
+      final remNorth = _currentMapNorth - _lastNodeNorth;
+      final distFromLastNode = sqrt(remEast * remEast + remNorth * remNorth);
+      if (distFromLastNode >= 0.15 && _segments.isNotEmpty) {
+        _recordStep(_heading, length: distFromLastNode);
+        _stepCount++;
+        _lastNodeEast = _currentMapEast;
+        _lastNodeNorth = _currentMapNorth;
+      }
+    }
 
     await showDialog<void>(
       context: context,
@@ -454,10 +506,16 @@ class _MappingScreenState extends State<MappingScreen> {
     }
 
     // Save any remainder distance at the end of the route so physical distance is precisely preserved
-    if (_accumulatedDistance > 0.05 && _segments.isNotEmpty) {
-      _segments.last.steps.add(RawStep(_heading, _accumulatedDistance, floor: widget.floor));
-      _stepCount++;
-      _accumulatedDistance = 0.0;
+    if (_isTracking && _coordinateTransform.isCalibrated) {
+      final remEast = _currentMapEast - _lastNodeEast;
+      final remNorth = _currentMapNorth - _lastNodeNorth;
+      final distFromLastNode = sqrt(remEast * remEast + remNorth * remNorth);
+      if (distFromLastNode >= 0.08 && _segments.isNotEmpty) {
+        _segments.last.steps.add(RawStep(_heading, distFromLastNode, floor: widget.floor));
+        _stepCount++;
+        _lastNodeEast = _currentMapEast;
+        _lastNodeNorth = _currentMapNorth;
+      }
     }
 
     // Stop AR session cleanly and release screen wake lock

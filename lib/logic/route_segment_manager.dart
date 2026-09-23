@@ -247,7 +247,27 @@ class RouteSegmentManager {
     double? userNorth,
   }) {
     final sCurrent = currentProgress.clamp(0.0, _totalDistance);
-    final sAhead = min(_totalDistance, sCurrent + lookaheadMeters);
+
+    // Lookahead clamping: when approaching an upcoming turn (more than 0.6m away),
+    // strictly track the current corridor's direction up to the turn point.
+    // Do NOT look around the corner into the next corridor prematurely,
+    // so the user isn't asked to turn until they physically reach the turn point.
+    final currentSeg = getSegmentForProgress(sCurrent);
+    final upcomingTurn = currentSeg.upcomingTurn;
+
+    double sAhead;
+    if (upcomingTurn != null) {
+      final distToTurn = upcomingTurn.distance - sCurrent;
+      if (distToTurn > 0.6) {
+        // Approaching the turn: keep target bearing locked straight ahead along current corridor
+        sAhead = min(upcomingTurn.distance, sCurrent + lookaheadMeters);
+      } else {
+        // At the exact turn point (within 0.6m): look past the turn into the new corridor
+        sAhead = min(_totalDistance, upcomingTurn.distance + max(1.0, lookaheadMeters));
+      }
+    } else {
+      sAhead = min(_totalDistance, sCurrent + lookaheadMeters);
+    }
 
     final double curEast;
     final double curNorth;
