@@ -83,6 +83,39 @@ class FloorTransition {
   );
 }
 
+/// A path added in the map editor, branching off a floor's path network:
+/// either drawn between two existing points (e.g. a shortcut between two
+/// places) or walked from an existing point. Its length comes from map
+/// coordinates, which are in metres.
+class PathLink {
+  /// Node indices (see FloorGraph) of the ends. [toNode] is null for a
+  /// walked path that ends away from the existing paths (a dead end at its
+  /// last bend point).
+  final int fromNode;
+  final int? toNode;
+
+  /// Points after [fromNode], in map metres (east, north): bends of a drawn
+  /// path, or the recorded points of a walked one.
+  final List<(double, double)> bends;
+
+  const PathLink({required this.fromNode, required this.toNode, this.bends = const []});
+
+  Map<String, dynamic> toJson() => {
+    'fromNode': fromNode,
+    'toNode': toNode,
+    'bends': [for (final b in bends) [b.$1, b.$2]],
+  };
+
+  factory PathLink.fromJson(Map<String, dynamic> json) => PathLink(
+    fromNode: json['fromNode'] as int,
+    toNode: json['toNode'] as int?,
+    bends: [
+      for (final b in (json['bends'] as List? ?? const []))
+        ((b[0] as num).toDouble(), (b[1] as num).toDouble()),
+    ],
+  );
+}
+
 class PathNode {
   final int index;
   final double heading;
@@ -180,4 +213,37 @@ class Waypoint {
     floor: json['floor'] as int? ?? 0,
     category: json['category'] as String? ?? 'room',
   );
+
+  static const String stairsCategory = 'stairs';
+  static const String liftCategory = 'lift';
+
+  /// Stairs or lift: a place that leads to other floors.
+  bool get isConnector => category == stairsCategory || category == liftCategory;
+
+  /// Connectors on different floors of a building are linked when they share
+  /// a type and a name (case and spacing ignored), e.g. "Lift A" on floor 0
+  /// and "lift a" on floor 2.
+  String get connectorKey => '$category:${label.trim().toLowerCase()}';
+
+  /// Name for instructions, e.g. "Lift A" for a lift marked just "A".
+  String get displayName {
+    if (!isConnector) return label;
+    final kind = category == liftCategory ? 'Lift' : 'Stairs';
+    final lower = label.toLowerCase();
+    const words = ['lift', 'elevator', 'stair', 'escalator'];
+    return words.any(lower.contains) ? label : '$kind ${label.trim()}';
+  }
+
+  // Value equality, so a waypoint reloaded from storage still matches the
+  // one selected in a dropdown.
+  @override
+  bool operator ==(Object other) =>
+      other is Waypoint &&
+      other.globalStepIndex == globalStepIndex &&
+      other.label == label &&
+      other.floor == floor &&
+      other.category == category;
+
+  @override
+  int get hashCode => Object.hash(globalStepIndex, label, floor, category);
 }

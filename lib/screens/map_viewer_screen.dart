@@ -7,18 +7,21 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logic/depth_occlusion_manager.dart';
-import '../logic/floor_transition_manager.dart';
+import '../logic/floor_graph.dart';
+import '../logic/floor_route_planner.dart';
 import '../logic/relocalization_manager.dart';
 import '../logic/route_instructions.dart';
 import '../logic/route_segment_manager.dart';
 import '../logic/spatial_sensor_fusion.dart';
 import '../logic/wall_collision_validator.dart';
+import '../models/floor_map_data.dart';
 import '../models/map_models.dart';
 import '../widgets/navigation/ar_mini_map.dart';
 import '../widgets/navigation/ar_path_painter.dart';
 import '../widgets/navigation/ar_world_scanner_overlay.dart';
 import '../widgets/navigation/off_path_direction_prompt.dart';
 import '../widgets/path_map_painter.dart';
+import 'map_editor_screen.dart';
 
 class MapViewerScreen extends StatefulWidget {
   final String mapKey;
@@ -32,13 +35,25 @@ class MapViewerScreen extends StatefulWidget {
 
 class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProviderStateMixin {
   bool _isLoading = true;
-  List<PathSegment> _segments = [];
   List<Waypoint> _waypoints = [];
   List<WallSegment> _walls = [];
   List<WallSegment> _detectedWalls = [];
-  List<FloorTransition> _transitions = [];
   int _stepCount = 0;
   int _currentFloor = 0;
+
+  // Every mapped floor of this building. The fields above always hold the
+  // floor currently shown (see _showFloor).
+  Map<int, FloorMapData> _floors = {};
+  FloorGraph? _graph;
+
+  // Cross-floor trips: which connector type to route through, and the legs
+  // being walked (frozen when navigation starts).
+  bool _preferLift = true;
+  List<TripLeg>? _activeLegs;
+  int _legIndex = 0;
+  // Reached the stairs/lift at the end of a leg; waiting for the walker to
+  // confirm they're on the next floor.
+  bool _atConnector = false;
 
   Waypoint? _startLocation;
   Waypoint? _destination;
@@ -50,7 +65,6 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   SpatialSensorFusion? _fusionEngine;
   StreamSubscription<FusedPosition>? _fusionSub;
   RelocalizationManager? _relocalizer;
-  FloorTransitionManager? _floorTransitionManager;
   RouteSegmentManager? _segmentManager;
   final DepthOcclusionManager _depthOcclusionManager = DepthOcclusionManager();
 
@@ -87,9 +101,6 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
   DateTime? _arrivalZoneEntryTime;
   bool _hasArrivedAtDestination = false;
-
-  bool _isNearTransition = false;
-  FloorTransition? _activeTransition;
 
   Timer? _navScreenKeepAliveTimer;
   static const Duration _navScreenInactivityTimeout = Duration(minutes: 8);
@@ -134,121 +145,111 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     final prefs = await SharedPreferences.getInstance();
     final jsonStr = prefs.getString(widget.mapKey);
 
-    if (jsonStr != null) {
-      final mapData = jsonDecode(jsonStr);
-      final List<PathSegment> segments = [];
-      if (mapData['segments'] != null) {
-        for (var s in mapData['segments']) {
-          segments.add(PathSegment.fromJson(s));
-        }
-      }
-
-      final List<Waypoint> waypoints = [];
-      if (mapData['waypoints'] != null) {
-        for (var w in mapData['waypoints']) {
-          waypoints.add(Waypoint.fromJson(w));
-        }
-      }
-
-      final List<WallSegment> walls = [];
-      if (mapData['walls'] != null) {
-        for (var w in mapData['walls']) {
-          walls.add(WallSegment.fromJson(w));
-        }
-      }
-
-      final List<FloorTransition> transitions = [];
-      if (mapData['transitions'] != null) {
-        for (var t in mapData['transitions']) {
-          transitions.add(FloorTransition.fromJson(t));
-        }
-      }
-
-      final stepCount = mapData['stepCount'] as int? ?? 0;
-      final floor = mapData['floor'] as int? ?? 0;
-
-      if (!waypoints.any((w) => w.globalStepIndex == 0)) {
-        waypoints.insert(0, Waypoint(0, 'Start', floor: floor));
-      }
-      if (stepCount > 0 && !waypoints.any((w) => w.globalStepIndex == stepCount)) {
-        waypoints.add(Waypoint(stepCount, 'End', floor: floor));
-      }
-
-      Waypoint? defaultStart = _startLocation;
-      Waypoint? defaultDest = _destination;
-      if (defaultStart == null && waypoints.isNotEmpty) {
-        defaultStart = waypoints.first;
-      }
-      if (defaultDest == null && waypoints.length >= 2) {
-        defaultDest = waypoints.last;
-      }
-
-      setState(() {
-        _segments = segments;
-        _waypoints = waypoints;
-        _walls = walls;
-        _transitions = transitions;
-        _stepCount = stepCount;
-        _currentFloor = floor;
-        _startLocation = defaultStart;
-        _destination = defaultDest;
-        _isLoading = false;
-      });
-    } else {
-      setState(() {
-        _isLoading = false;
-      });
+    if (jsonStr == null) {
+      setState(() => _isLoading = false);
+      return;
     }
-  }
 
-  List<PathNode> get _computedNodes {
-    final List<PathNode> nodes = [];
-    double currentEast = 0;
-    double currentNorth = 0;
-
-    final initialHeading = _segments.isNotEmpty && _segments.first.steps.isNotEmpty
-        ? _segments.first.steps.first.heading
-        : 0.0;
-    nodes.add(PathNode(0, initialHeading, currentEast, currentNorth, floor: _currentFloor));
-
-    int index = 1;
-    for (final segment in _segments) {
-      final avgHeadingRad = segment.averageHeading * pi / 180.0;
-      for (final step in segment.steps) {
-        currentEast += step.length * sin(avgHeadingRad);
-        currentNorth += step.length * cos(avgHeadingRad);
-        nodes.add(PathNode(index++, segment.averageHeading, currentEast, currentNorth, floor: segment.floor));
+    final openedData = jsonDecode(jsonStr) as Map;
+    final opened = FloorMapData.fromJson(widget.mapKey, openedData);
+    final floors = <int, FloorMapData>{opened.floor: opened};
+    // Other floors of the same building (older maps without a stored name
+    // can't be matched, so they stay single-floor).
+    final building = openedData['name'] as String?;
+    if (building != null) {
+      for (final key in prefs.getKeys().where((k) => k.startsWith('map_') && k != widget.mapKey)) {
+        final data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
+        if (data['name'] != building) continue;
+        final floor = FloorMapData.fromJson(key, data);
+        floors.putIfAbsent(floor.floor, () => floor);
       }
     }
-    return nodes;
+
+    // A selected place may have been renamed or deleted in the editor.
+    final allPlaces = {for (final f in floors.values) ...f.waypoints};
+    Waypoint? defaultStart = allPlaces.contains(_startLocation) ? _startLocation : null;
+    Waypoint? defaultDest = allPlaces.contains(_destination) ? _destination : null;
+    if (defaultStart == null && opened.waypoints.isNotEmpty) {
+      defaultStart = opened.waypoints.first;
+    }
+    if (defaultDest == null && opened.waypoints.length >= 2) {
+      defaultDest = opened.waypoints.last;
+    }
+
+    setState(() {
+      _floors = floors;
+      _startLocation = defaultStart;
+      _destination = defaultDest;
+      _showFloor(defaultStart?.floor ?? opened.floor);
+      _isLoading = false;
+    });
   }
 
+  /// Makes [floor] the one drawn and navigated on.
+  void _showFloor(int floor) {
+    final data = _floors[floor];
+    if (data == null) return;
+    _waypoints = data.waypoints;
+    _walls = data.walls;
+    _stepCount = data.stepCount;
+    _graph = data.graph;
+    _currentFloor = floor;
+  }
+
+  /// Every place on every floor, lowest floor first.
+  List<Waypoint> get _allWaypoints {
+    final floors = _floors.keys.toList()..sort();
+    return [for (final f in floors) ..._floors[f]!.waypoints];
+  }
+
+  String _placeName(Waypoint w) =>
+      _floors.length > 1 ? '${w.displayName} · Floor ${w.floor}' : w.displayName;
+
+  List<TripLeg>? get _plannedLegs {
+    if (_startLocation == null || _destination == null) return null;
+    return FloorRoutePlanner.plan(
+      graphs: {for (final e in _floors.entries) e.key: e.value.graph},
+      waypointsByFloor: {for (final e in _floors.entries) e.key: e.value.waypoints},
+      start: _startLocation!,
+      destination: _destination!,
+      preferLift: _preferLift,
+    );
+  }
+
+  /// The leg on the floor being shown: the one being walked while
+  /// navigating, otherwise the planned leg on this floor (if any).
+  TripLeg? get _displayLeg {
+    if (_activeLegs != null) {
+      return _legIndex < _activeLegs!.length ? _activeLegs![_legIndex] : null;
+    }
+    return _plannedLegs?.where((l) => l.floor == _currentFloor).firstOrNull;
+  }
+
+  bool get _hasNextLeg => _activeLegs != null && _legIndex < _activeLegs!.length - 1;
+
+  List<PathNode> get _computedNodes => _graph?.nodes ?? const [];
+
+  /// Total length of the floor's walkable paths, walked and drawn.
   double get _pathLength {
-    double dist = 0;
-    for (final segment in _segments) {
-      for (final step in segment.steps) {
-        dist += step.length;
-      }
+    final graph = _graph;
+    if (graph == null) return 0;
+    var dist = 0.0;
+    for (final (a, b) in graph.edges) {
+      dist += sqrt(pow(graph.nodes[a].east - graph.nodes[b].east, 2) +
+          pow(graph.nodes[a].north - graph.nodes[b].north, 2));
     }
     return dist;
   }
 
   List<PathNode>? get _routeNodes {
-    if (_startLocation == null || _destination == null) return null;
-    final nodes = _computedNodes;
-    int startIdx = _startLocation!.globalStepIndex;
-    int endIdx = _destination!.globalStepIndex;
-
-    if (startIdx >= nodes.length) startIdx = nodes.length - 1;
-    if (endIdx >= nodes.length) endIdx = nodes.length - 1;
-
-    final List<PathNode> rawSublist;
-    if (startIdx <= endIdx) {
-      rawSublist = nodes.sublist(startIdx, endIdx + 1);
-    } else {
-      rawSublist = nodes.sublist(endIdx, startIdx + 1).reversed.toList();
-    }
-    if (rawSublist.isEmpty) return null;
+    final leg = _displayLeg;
+    if (leg == null || leg.floor != _currentFloor) return null;
+    final graph = _graph;
+    if (graph == null) return null;
+    // Shortest way through the floor's paths, including drawn shortcuts.
+    final path = graph.shortestPath(leg.from.globalStepIndex, leg.to.globalStepIndex);
+    if (path == null) return null;
+    final rawSublist = [for (final i in path) graph.nodes[i]];
 
     // Explicitly reconstruct the active navigation route so that every node has
     // the correct directional heading pointing along the route toward the destination.
@@ -296,15 +297,18 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
   bool get _arReady => !_useArCore || (_isFloorDetected && _floorConfidence >= 0.35);
 
-  bool get _canStartNavigation =>
-      _startLocation != null && _destination != null && (_routeNodes?.length ?? 0) >= 2;
+  bool get _canStartNavigation {
+    final legs = _plannedLegs;
+    if (legs == null) return false;
+    return legs.length > 1 || legs.first.from.globalStepIndex != legs.first.to.globalStepIndex;
+  }
 
   Future<void> _startArNavigation() => _startNavigation(useArCore: true);
   Future<void> _startSensorArNavigation() => _startNavigation(useArCore: false);
 
   Future<void> _startNavigation({required bool useArCore}) async {
-    final route = _routeNodes;
-    if (route == null || route.length < 2) {
+    final legs = _plannedLegs;
+    if (legs == null || !_canStartNavigation) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Select a start and destination below first')),
       );
@@ -323,12 +327,49 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       return;
     }
 
-    // Reset tracking and session state completely for clean start
+    _activeLegs = legs;
+    _legIndex = 0;
+    _showFloor(legs.first.floor);
     _isFloorDetected = false;
     _floorConfidence = 0.0;
     _showFloorAnchoredBadge = false;
+    _beginLeg();
+
+    if (mounted) {
+      setState(() {
+        _useArCore = useArCore;
+        _isArMode = true;
+      });
+      _resetNavScreenKeepAliveTimer();
+    }
+  }
+
+  /// Starts tracking along the current leg. The AR session keeps running
+  /// across legs; each leg gets a fresh fusion engine, which calibrates
+  /// itself to the leg's first node (the stairs/lift on a new floor).
+  void _beginLeg() {
+    _atConnector = false;
+    _isFacingPath = true;
     _hasArrivedAtDestination = false;
     _arrivalZoneEntryTime = null;
+    _depthQueryTimer?.cancel();
+    _depthOcclusionManager.clear();
+    _routeTotalDistance = 0;
+    _liveProgress = 0.0;
+
+    final route = _routeNodes;
+    if (route == null || route.length < 2) {
+      // Nothing to walk on this floor: the trip starts at the stairs/lift, or
+      // ends right at the one just taken.
+      if (_hasNextLeg) {
+        _atConnector = true;
+      } else {
+        _hasArrivedAtDestination = true;
+      }
+      return;
+    }
+
+    // Reset tracking state completely for a clean start
     _detectedWalls = [];
     _isDrifting = false;
     _driftReason = '';
@@ -366,11 +407,6 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       onRelocalized: (event) {
         debugPrint("Relocalized: ${event.reason}");
       },
-    );
-
-    _floorTransitionManager = FloorTransitionManager(
-      currentFloor: _currentFloor,
-      transitions: _transitions,
     );
 
     _fusionSub = _fusionEngine!.positions.listen((pos) {
@@ -425,19 +461,6 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         _relocalizer?.checkAndRelocalize(pos);
       }
 
-      // Check transition proximity
-      final transCheck = _floorTransitionManager?.checkTransitionProximity(
-        userEast: pos.east,
-        userNorth: pos.north,
-        routeNodes: route,
-      );
-      if (transCheck != null && mounted) {
-        setState(() {
-          _isNearTransition = transCheck.isNearTransition;
-          _activeTransition = transCheck.transition;
-        });
-      }
-
       if (!wasDetected && pos.isFloorDetected && pos.floorConfidence >= 0.4) {
         setState(() => _showFloorAnchoredBadge = true);
         _badgeTimer?.cancel();
@@ -450,14 +473,38 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     });
 
     _fusionEngine!.start();
+  }
 
-    if (mounted) {
-      setState(() {
-        _useArCore = useArCore;
-        _isArMode = true;
-      });
-      _resetNavScreenKeepAliveTimer();
-    }
+  /// The walker confirmed they took the stairs/lift: switch to the next
+  /// floor's map and continue from the matching stairs/lift there.
+  Future<void> _advanceLeg() async {
+    if (!_hasNextLeg) return;
+    await _fusionSub?.cancel();
+    _fusionSub = null;
+    _fusionEngine?.dispose();
+    _fusionEngine = null;
+    _relocalizer = null;
+    _segmentManager = null;
+    if (!mounted) return;
+
+    _legIndex++;
+    _showFloor(_activeLegs![_legIndex].floor);
+    _beginLeg();
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Now navigating on Floor $_currentFloor')),
+    );
+  }
+
+  ({String title, String subtitle, IconData icon}) get _connectorGuidance {
+    final exit = _activeLegs![_legIndex].to;
+    final nextFloor = _activeLegs![_legIndex + 1].floor;
+    final isLift = exit.category == Waypoint.liftCategory;
+    return (
+      title: 'Take ${exit.displayName} to Floor $nextFloor',
+      subtitle: "Tap \"I'm on Floor $nextFloor\" when you get there",
+      icon: isLift ? Icons.elevator_outlined : Icons.stairs_outlined,
+    );
   }
 
   void _triggerDepthOcclusionCheck() {
@@ -539,6 +586,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       );
     }
 
+    if (_atConnector) return _connectorGuidance;
+
     if (!_isFacingPath) {
       return (
         title: _turnDirection == 'left'
@@ -546,14 +595,6 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
             : 'Turn Right ${_offPathAngleDelta.abs().toStringAsFixed(0)}°',
         subtitle: 'Face towards path to continue',
         icon: _turnDirection == 'left' ? CupertinoIcons.arrow_turn_up_left : CupertinoIcons.arrow_turn_up_right,
-      );
-    }
-
-    if (_isNearTransition && _activeTransition != null) {
-      return (
-        title: 'Stairs to Floor ${_activeTransition!.toFloor}',
-        subtitle: 'Tap confirmation button below once arrived on Floor ${_activeTransition!.toFloor}',
-        icon: CupertinoIcons.arrow_up_right_square,
       );
     }
 
@@ -593,6 +634,10 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       if (isInArrivalZone) {
         _arrivalZoneEntryTime ??= DateTime.now();
         if (DateTime.now().difference(_arrivalZoneEntryTime!).inMilliseconds >= 800) {
+          if (_hasNextLeg) {
+            _atConnector = true;
+            return _connectorGuidance;
+          }
           _hasArrivedAtDestination = true;
           return (
             title: 'You have arrived',
@@ -631,8 +676,65 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
     return (
       title: 'Continue straight',
-      subtitle: 'to ${_destination?.label ?? "destination"}',
+      subtitle: 'to ${_displayLeg?.to.displayName ?? _destination?.label ?? "destination"}',
       icon: CupertinoIcons.arrow_up,
+    );
+  }
+
+  Future<void> _openEditor() async {
+    final floor = _floors[_currentFloor];
+    if (floor == null) return;
+    final title = floor.building == null ? widget.mapName : '${floor.building} · Floor ${floor.floor}';
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => MapEditorScreen(mapKey: floor.key, title: title)),
+    );
+    if (saved == true && mounted) {
+      await _loadMapData();
+      if (mounted) _showFloor(floor.floor);
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// Under the pickers for a cross-floor trip: the lift/stairs choice and the
+  /// planned route, or why there isn't one.
+  Widget _buildFloorChangeSummary() {
+    final legs = _plannedLegs;
+    const muted = TextStyle(fontSize: 12, color: Color(0xFF71717A));
+    if (legs == null) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: Text(
+          'No stairs or lift links Floor ${_startLocation!.floor} and Floor ${_destination!.floor}. '
+          'While mapping, mark the same stairs/lift with the same name on both floors.',
+          style: const TextStyle(fontSize: 12, color: Color(0xFFB91C1C)),
+        ),
+      );
+    }
+    final via = legs.first.to;
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(
+        children: [
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: true, label: Text('Lift'), icon: Icon(Icons.elevator_outlined, size: 16)),
+              ButtonSegment(value: false, label: Text('Stairs'), icon: Icon(Icons.stairs_outlined, size: 16)),
+            ],
+            selected: {_preferLift},
+            showSelectedIcon: false,
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+            onSelectionChanged: (s) => setState(() => _preferLift = s.first),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Via ${via.displayName} to Floor ${legs.last.floor}',
+              style: muted,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -657,7 +759,9 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _fusionEngine = null;
     _relocalizer = null;
     _segmentManager = null;
-    _floorTransitionManager = null;
+    _activeLegs = null;
+    _legIndex = 0;
+    _atConnector = false;
     try {
       await platform.invokeMethod('setKeepScreenOn', {'enabled': false});
       await platform.invokeMethod(_useArCore ? 'stopArNavigation' : 'stopCameraPreview');
@@ -675,6 +779,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
           _startLocation = _destination;
           _destination = null;
         }
+        _showFloor(_startLocation?.floor ?? _currentFloor);
         if (_startLocation != null) {
           final nodes = _computedNodes;
           final idx = _startLocation!.globalStepIndex.clamp(0, nodes.isEmpty ? 0 : nodes.length - 1);
@@ -704,7 +809,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
           body: Stack(
           children: [
             // Glowing route line strictly anchored to the real floor
-            if (_arReady)
+            if (_arReady && route.length >= 2)
               AnimatedBuilder(
                 animation: _pulseController,
                 builder: (context, _) => CustomPaint(
@@ -716,8 +821,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                     headingDegrees: _liveHeading,
                     tiltDegrees: _liveTilt,
                     animationProgress: _pulseController.value,
-                    startLabel: _startLocation?.label ?? 'Start',
-                    destinationLabel: _destination?.label ?? 'Destination',
+                    startLabel: _displayLeg?.from.displayName ?? 'Start',
+                    destinationLabel: _displayLeg?.to.displayName ?? 'Destination',
                     cameraHeight: _liveCameraHeight,
                     verticalFovDegrees: _liveFov,
                     liveProgress: _liveProgress,
@@ -786,7 +891,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
               ),
 
             // Persistent top-right Mini-Map Overlay
-            if (_arReady)
+            if (_arReady && route.length >= 2)
               Positioned(
                 top: MediaQuery.of(context).padding.top + 12,
                 right: 14,
@@ -895,39 +1000,32 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                   child: _GuidanceBanner(guidance: _currentGuidance),
                 ),
 
-              // Floor Transition confirmation button
-              if (_isNearTransition && _activeTransition != null)
+              // Took the stairs/lift: confirm arrival on the next floor. Also
+              // offered when close, in case tracking under-counts the walk.
+              if (_hasNextLeg && (_atConnector || _routeTotalDistance - _liveProgress <= 3.0))
                 Positioned(
-                  bottom: MediaQuery.of(context).padding.bottom + 90,
+                  bottom: MediaQuery.of(context).padding.bottom + 110,
                   left: 24,
                   right: 24,
                   child: ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black,
-                      foregroundColor: Colors.white,
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.black,
                       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                        side: const BorderSide(color: Colors.white24),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       elevation: 6,
                     ),
-                    icon: const Icon(CupertinoIcons.arrow_up_right_square, size: 20),
+                    icon: Icon(
+                      _activeLegs![_legIndex].to.category == Waypoint.liftCategory
+                          ? Icons.elevator_outlined
+                          : Icons.stairs_outlined,
+                      size: 20,
+                    ),
                     label: Text(
-                      'I have reached Floor ${_activeTransition!.toFloor}',
+                      "I'm on Floor ${_activeLegs![_legIndex + 1].floor}",
                       style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        _currentFloor = _activeTransition!.toFloor;
-                        _floorTransitionManager?.confirmArrivalAtTargetFloor(_currentFloor);
-                        _isNearTransition = false;
-                        _activeTransition = null;
-                      });
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Switched navigation to Floor $_currentFloor')),
-                      );
-                    },
+                    onPressed: _advanceLeg,
                   ),
                 ),
 
@@ -949,6 +1047,20 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
     final nodes = _computedNodes;
     return Scaffold(
+      floatingActionButton: _isLoading || _floors[_currentFloor] == null
+          ? null
+          : Padding(
+              // Clear the Start AR Navigation button below the map.
+              padding: const EdgeInsets.only(bottom: 76),
+              child: FloatingActionButton(
+                heroTag: 'edit_map',
+                backgroundColor: Colors.black,
+                foregroundColor: Colors.white,
+                tooltip: 'Edit map',
+                onPressed: _openEditor,
+                child: const Icon(Icons.edit_outlined),
+              ),
+            ),
       appBar: AppBar(
         leading: CupertinoNavigationBarBackButton(
           color: Colors.black,
@@ -987,36 +1099,70 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                     ],
                   ),
                 ),
-                if (_waypoints.isNotEmpty)
+                if (_allWaypoints.isNotEmpty)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     decoration: const BoxDecoration(
                       color: Colors.white,
                       border: Border(bottom: BorderSide(color: Color(0xFFE4E4E7))),
                     ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: DropdownButtonFormField<Waypoint>(
+                                key: ValueKey(('start', _startLocation)),
+                                isExpanded: true,
+                                decoration: const InputDecoration(labelText: 'Start'),
+                                initialValue: _startLocation,
+                                items: _allWaypoints
+                                    .map((w) => DropdownMenuItem(value: w, child: Text(_placeName(w), overflow: TextOverflow.ellipsis)))
+                                    .toList(),
+                                onChanged: (val) => setState(() {
+                                  _startLocation = val;
+                                  if (val != null) _showFloor(val.floor);
+                                }),
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: DropdownButtonFormField<Waypoint>(
+                                key: ValueKey(('dest', _destination)),
+                                isExpanded: true,
+                                decoration: const InputDecoration(labelText: 'Destination'),
+                                initialValue: _destination,
+                                items: _allWaypoints
+                                    .map((w) => DropdownMenuItem(value: w, child: Text(_placeName(w), overflow: TextOverflow.ellipsis)))
+                                    .toList(),
+                                onChanged: (val) => setState(() => _destination = val),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_startLocation != null &&
+                            _destination != null &&
+                            _startLocation!.floor != _destination!.floor)
+                          _buildFloorChangeSummary(),
+                      ],
+                    ),
+                  ),
+                if (_floors.length > 1)
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
                     child: Row(
                       children: [
-                        Expanded(
-                          child: DropdownButtonFormField<Waypoint>(
-                            decoration: const InputDecoration(labelText: 'Start'),
-                            initialValue: _startLocation,
-                            items: _waypoints
-                                .map((w) => DropdownMenuItem(value: w, child: Text(w.label)))
-                                .toList(),
-                            onChanged: (val) => setState(() => _startLocation = val),
+                        for (final f in (_floors.keys.toList()..sort()))
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: Text('Floor $f'),
+                              selected: f == _currentFloor,
+                              onSelected: (_) => setState(() => _showFloor(f)),
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: DropdownButtonFormField<Waypoint>(
-                            decoration: const InputDecoration(labelText: 'Destination'),
-                            initialValue: _destination,
-                            items: _waypoints
-                                .map((w) => DropdownMenuItem(value: w, child: Text(w.label)))
-                                .toList(),
-                            onChanged: (val) => setState(() => _destination = val),
-                          ),
-                        ),
                       ],
                     ),
                   ),
@@ -1029,6 +1175,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                       painter: PathMapPainter(
                         nodes,
                         _waypoints,
+                        edges: _graph?.edges,
+                        walkEnd: (_graph?.walkNodeCount ?? 1) - 1,
                         routeNodes: _routeNodes,
                         walls: [..._walls, ..._detectedWalls],
                       ),

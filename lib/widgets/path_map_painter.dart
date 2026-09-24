@@ -2,18 +2,17 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import '../models/map_models.dart';
 
-class PathMapPainter extends CustomPainter {
-  final List<PathNode> nodes;
-  final List<Waypoint> waypoints;
-  final List<PathNode>? routeNodes;
-  final List<WallSegment> walls;
+/// How map metres (east, north) are fitted onto a canvas. Shared by the
+/// painter and anything that needs to turn a tap back into map metres.
+class MapViewport {
+  final Size size;
+  final double scale; // pixels per metre
+  final double centreEast;
+  final double centreNorth;
 
-  PathMapPainter(this.nodes, this.waypoints, {this.routeNodes, this.walls = const []});
+  const MapViewport._(this.size, this.scale, this.centreEast, this.centreNorth);
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (nodes.isEmpty) return;
-
+  factory MapViewport.fit(List<PathNode> nodes, List<WallSegment> walls, Size size) {
     var minEast = nodes.first.east, maxEast = nodes.first.east;
     var minNorth = nodes.first.north, maxNorth = nodes.first.north;
     for (final n in nodes) {
@@ -35,13 +34,45 @@ class PathMapPainter extends CustomPainter {
     final spanNorth = max(maxNorth - minNorth, minSpan);
     final scale = min((size.width - 2 * padding) / spanEast,
         (size.height - 2 * padding) / spanNorth);
-    final centreEast = (minEast + maxEast) / 2;
-    final centreNorth = (minNorth + maxNorth) / 2;
+    return MapViewport._(size, scale, (minEast + maxEast) / 2, (minNorth + maxNorth) / 2);
+  }
 
-    Offset toScreen(double east, double north) => Offset(
-          size.width / 2 + (east - centreEast) * scale,
-          size.height / 2 - (north - centreNorth) * scale,
-        );
+  Offset toScreen(double east, double north) => Offset(
+        size.width / 2 + (east - centreEast) * scale,
+        size.height / 2 - (north - centreNorth) * scale,
+      );
+
+  (double, double) toMap(Offset p) => (
+        centreEast + (p.dx - size.width / 2) / scale,
+        centreNorth - (p.dy - size.height / 2) / scale,
+      );
+}
+
+class PathMapPainter extends CustomPainter {
+  final List<PathNode> nodes;
+  final List<Waypoint> waypoints;
+  final List<PathNode>? routeNodes;
+  final List<WallSegment> walls;
+
+  /// Path network edges (node index pairs). When null, [nodes] is drawn as
+  /// one continuous walk.
+  final List<(int, int)>? edges;
+
+  /// Index of the walk's last node, marked as its end. Defaults to the last
+  /// node.
+  final int? walkEnd;
+
+  PathMapPainter(this.nodes, this.waypoints, {this.routeNodes, this.walls = const [], this.edges, this.walkEnd});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (nodes.isEmpty) return;
+
+    final viewport = MapViewport.fit(nodes, walls, size);
+    final scale = viewport.scale;
+    final centreEast = viewport.centreEast;
+    final centreNorth = viewport.centreNorth;
+    final toScreen = viewport.toScreen;
 
     _paintGrid(canvas, size, scale, centreEast, centreNorth, toScreen);
 
@@ -55,12 +86,22 @@ class PathMapPainter extends CustomPainter {
       canvas.drawLine(toScreen(w.startEast, w.startNorth), toScreen(w.endEast, w.endNorth), wallPaint);
     }
 
-    final path = Path()
-      ..moveTo(toScreen(nodes.first.east, nodes.first.north).dx,
-          toScreen(nodes.first.east, nodes.first.north).dy);
-    for (final n in nodes.skip(1)) {
-      final p = toScreen(n.east, n.north);
-      path.lineTo(p.dx, p.dy);
+    final path = Path();
+    if (edges != null) {
+      for (final (a, b) in edges!) {
+        final pa = toScreen(nodes[a].east, nodes[a].north);
+        final pb = toScreen(nodes[b].east, nodes[b].north);
+        path
+          ..moveTo(pa.dx, pa.dy)
+          ..lineTo(pb.dx, pb.dy);
+      }
+    } else {
+      final first = toScreen(nodes.first.east, nodes.first.north);
+      path.moveTo(first.dx, first.dy);
+      for (final n in nodes.skip(1)) {
+        final p = toScreen(n.east, n.north);
+        path.lineTo(p.dx, p.dy);
+      }
     }
     canvas.drawPath(
       path,
@@ -98,9 +139,19 @@ class PathMapPainter extends CustomPainter {
       if (wp.globalStepIndex < nodes.length) {
         final node = nodes[wp.globalStepIndex];
         final pos = toScreen(node.east, node.north);
-        canvas.drawCircle(pos, 8, Paint()..color = Colors.black);
-        canvas.drawCircle(pos, 4, Paint()..color = Colors.white);
-        _paintLabel(canvas, wp.label, pos + const Offset(10, -10), Colors.black);
+        if (wp.isConnector) {
+          // Stairs/lift: a square, so floor links stand out from places.
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(Rect.fromCenter(center: pos, width: 16, height: 16), const Radius.circular(3)),
+            Paint()..color = Colors.black,
+          );
+          canvas.drawRect(Rect.fromCenter(center: pos, width: 7, height: 7), Paint()..color = Colors.white);
+          _paintLabel(canvas, wp.displayName, pos + const Offset(10, -10), Colors.black);
+        } else {
+          canvas.drawCircle(pos, 8, Paint()..color = Colors.black);
+          canvas.drawCircle(pos, 4, Paint()..color = Colors.white);
+          _paintLabel(canvas, wp.label, pos + const Offset(10, -10), Colors.black);
+        }
       }
     }
 
@@ -110,8 +161,9 @@ class PathMapPainter extends CustomPainter {
     canvas.drawCircle(startPos, 4, Paint()..color = Colors.white);
     canvas.drawCircle(startPos, 2, Paint()..color = Colors.black);
 
+    final end = nodes[(walkEnd ?? nodes.length - 1).clamp(0, nodes.length - 1)];
     if (nodes.length > 1) {
-      final endPos = toScreen(nodes.last.east, nodes.last.north);
+      final endPos = toScreen(end.east, end.north);
       canvas.drawCircle(endPos, 7, Paint()..color = Colors.black);
       canvas.drawCircle(endPos, 3, Paint()..color = Colors.white);
     }

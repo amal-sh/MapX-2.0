@@ -8,14 +8,39 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logic/coordinate_transform.dart';
+import '../logic/floor_graph.dart';
 import '../models/map_models.dart';
+import '../widgets/marker_dialog.dart';
 import '../widgets/path_map_painter.dart';
 
+/// Where a new path walked off an existing floor map starts.
+class MappingBranch {
+  final FloorGraph base;
+  final List<Waypoint> baseWaypoints;
+  final int startNode;
+
+  const MappingBranch({required this.base, required this.baseWaypoints, required this.startNode});
+}
+
+/// A walk recorded in branch mode. Its nodes start at (0, 0), which is the
+/// branch's start node.
+class MappingRecording {
+  final List<PathSegment> segments;
+  final List<Waypoint> waypoints;
+
+  const MappingRecording(this.segments, this.waypoints);
+}
+
+/// Records a floor map by walking it. With [branch], records a new path
+/// starting from a point on an existing map instead: the existing map is
+/// shown underneath, and Save pops with a [MappingRecording] rather than
+/// storing a new map.
 class MappingScreen extends StatefulWidget {
   final String mapName;
   final int floor;
+  final MappingBranch? branch;
 
-  const MappingScreen({super.key, required this.mapName, required this.floor});
+  const MappingScreen({super.key, required this.mapName, required this.floor, this.branch});
 
   @override
   State<MappingScreen> createState() => _MappingScreenState();
@@ -66,6 +91,9 @@ class _MappingScreenState extends State<MappingScreen> {
 
   final List<PathSegment> _segments = [];
   final List<Waypoint> _waypoints = [];
+  // Stairs/lifts already marked on this building's other floors, offered as
+  // one-tap names so the same connector gets the same name on every floor.
+  List<Waypoint> _otherFloorConnectors = [];
   int _stepCount = 0;
   double _lastStepTime = 0;
   bool _pendingGrace = false;
@@ -91,7 +119,14 @@ class _MappingScreenState extends State<MappingScreen> {
   void initState() {
     super.initState();
     _checkArCore();
+    _loadOtherFloorConnectors();
   }
+
+  Future<void> _loadOtherFloorConnectors() async {
+    final found = await loadConnectorsOnOtherFloors(widget.mapName, widget.floor);
+    if (mounted) setState(() => _otherFloorConnectors = found);
+  }
+
 
   @override
   void dispose() {
@@ -381,6 +416,35 @@ class _MappingScreenState extends State<MappingScreen> {
     return nodes;
   }
 
+  /// The live map: just this walk, or in branch mode the existing map with
+  /// this walk (highlighted) growing out of the start point.
+  PathMapPainter get _canvasPainter {
+    final branch = widget.branch;
+    if (branch == null) return PathMapPainter(_computedNodes, _waypoints);
+
+    final base = branch.base;
+    final origin = base.nodes[branch.startNode];
+    final walk = _computedNodes;
+    // Walk node k (k >= 1) is appended after the base nodes; node 0 is the
+    // start node itself.
+    int indexOf(int k) => k == 0 ? branch.startNode : base.nodes.length + k - 1;
+    final added = [
+      for (var k = 1; k < walk.length; k++)
+        PathNode(indexOf(k), walk[k].heading, origin.east + walk[k].east, origin.north + walk[k].north,
+            floor: widget.floor),
+    ];
+    return PathMapPainter(
+      [...base.nodes, ...added],
+      [
+        ...branch.baseWaypoints,
+        for (final w in _waypoints) Waypoint(indexOf(w.globalStepIndex), w.label, floor: w.floor, category: w.category),
+      ],
+      edges: [...base.edges, for (var k = 1; k < walk.length; k++) (indexOf(k - 1), indexOf(k))],
+      walkEnd: base.walkNodeCount - 1,
+      routeNodes: [origin, ...added],
+    );
+  }
+
   double get _pathLength {
     final nodes = _computedNodes;
     double total = 0;
@@ -460,30 +524,9 @@ class _MappingScreenState extends State<MappingScreen> {
 
   Future<void> _addMarker() async {
     setState(() => _isAddingNode = true);
-    final TextEditingController controller = TextEditingController();
-    final String? label = await showDialog<String>(
+    final marker = await showDialog<MarkerDialogResult>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Add Waypoint / POI'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            hintText: 'e.g., Room 101, Elevator, Exit',
-            border: OutlineInputBorder(),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
+      builder: (context) => MarkerDialog(knownConnectors: _otherFloorConnectors),
     );
 
     if (!mounted) return;
@@ -491,8 +534,8 @@ class _MappingScreenState extends State<MappingScreen> {
     setState(() {
       _isAddingNode = false;
       _pendingGrace = true;
-      if (label != null && label.isNotEmpty) {
-        _waypoints.add(Waypoint(_stepCount, label, floor: widget.floor));
+      if (marker != null) {
+        _waypoints.add(Waypoint(_stepCount, marker.label, floor: widget.floor, category: marker.category));
       }
     });
   }
@@ -524,6 +567,12 @@ class _MappingScreenState extends State<MappingScreen> {
       await _methodChannel.invokeMethod('setKeepScreenOn', {'enabled': false});
       await _methodChannel.invokeMethod('stopArNavigation');
     } catch (_) {}
+
+    if (widget.branch != null) {
+      if (!mounted) return;
+      Navigator.pop(context, MappingRecording(_segments, _waypoints));
+      return;
+    }
 
     final prefs = await SharedPreferences.getInstance();
 
@@ -601,7 +650,7 @@ class _MappingScreenState extends State<MappingScreen> {
           color: Colors.black,
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text('${widget.mapName} · Floor ${widget.floor}'),
+        title: Text('${widget.branch != null ? 'New Path · ' : ''}${widget.mapName} · Floor ${widget.floor}'),
         backgroundColor: Colors.white,
         elevation: 0,
       ),
@@ -639,7 +688,7 @@ class _MappingScreenState extends State<MappingScreen> {
                     ),
                     const SizedBox(height: 14),
                     Text(
-                      'Ready to Map ${widget.mapName}',
+                      widget.branch != null ? 'Walk a New Path' : 'Ready to Map ${widget.mapName}',
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black),
                     ),
                     const SizedBox(height: 6),
@@ -648,6 +697,15 @@ class _MappingScreenState extends State<MappingScreen> {
                       textAlign: TextAlign.center,
                       style: const TextStyle(fontSize: 13, color: Color(0xFF71717A)),
                     ),
+                    if (widget.branch != null) ...[
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Stand exactly at the start point you picked, then tap Start Mapping and walk the new path. '
+                        'Mark turns and places as usual.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 13, color: Colors.black, fontWeight: FontWeight.w600),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -985,10 +1043,7 @@ class _MappingScreenState extends State<MappingScreen> {
                                     minScale: 0.5,
                                     maxScale: 6.0,
                                     child: CustomPaint(
-                                      painter: PathMapPainter(
-                                        _computedNodes,
-                                        _waypoints,
-                                      ),
+                                      painter: _canvasPainter,
                                       child: const SizedBox.expand(),
                                     ),
                                   ),
@@ -1019,7 +1074,7 @@ class _MappingScreenState extends State<MappingScreen> {
                                     backgroundColor: Colors.black,
                                     foregroundColor: Colors.white,
                                     elevation: 3,
-                                    tooltip: 'Add POI / Room',
+                                    tooltip: 'Add Place / Stairs / Lift',
                                     child: const Icon(CupertinoIcons.placemark, size: 20),
                                   ),
                                 ],
