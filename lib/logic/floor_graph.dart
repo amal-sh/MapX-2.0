@@ -29,7 +29,7 @@ class FloorGraph {
   final Map<(int, int), List<int>?> _pathCache = {};
 
   FloorGraph._(this.nodes, this.walkNodeCount, this.edges, this.linkNodeRanges)
-      : _adjacency = List.generate(nodes.length, (_) => []) {
+    : _adjacency = List.generate(nodes.length, (_) => []) {
     for (final (a, b) in edges) {
       final d = _dist(nodes[a], nodes[b]);
       _adjacency[a].add((b, d));
@@ -46,7 +46,9 @@ class FloorGraph {
     for (final link in links) {
       final rangeStart = nodes.length;
       final toNode = link.toNode;
-      if (link.fromNode >= rangeStart || (toNode != null && toNode >= rangeStart) || (toNode == null && link.bends.isEmpty)) {
+      if (link.fromNode >= rangeStart ||
+          (toNode != null && toNode >= rangeStart) ||
+          (toNode == null && link.bends.isEmpty)) {
         // Refers to a node that no longer exists (corrupt data): skip it.
         ranges.add((rangeStart, rangeStart));
         continue;
@@ -108,31 +110,50 @@ class FloorGraph {
   /// aren't connected.
   List<int>? shortestPath(int from, int to) {
     if (from < 0 || to < 0 || from >= nodes.length || to >= nodes.length) return null;
-    return _pathCache.putIfAbsent((from, to), () => _dijkstra(from, to));
+    return _pathCache.putIfAbsent((from, to), () => _aStar(from, to));
   }
 
-  List<int>? _dijkstra(int from, int to) {
-    final dist = List<double>.filled(nodes.length, double.infinity);
+  /// Nodes the last uncached search took off its queue: a measure of how
+  /// much of the floor it had to explore.
+  int lastSearchExpandedNodes = 0;
+
+  /// A* search. Nodes are explored in order of distance walked so far plus
+  /// the straight-line distance still to go. That estimate never exceeds the
+  /// real remaining walk (edges are straight lines in the same metres), so
+  /// the result is the true shortest path. It just reaches it exploring less
+  /// of the floor than plain Dijkstra, which has no sense of direction.
+  List<int>? _aStar(int from, int to) {
+    final target = nodes[to];
+    double estimate(int n) => _dist(nodes[n], target);
+
+    final walked = List<double>.filled(nodes.length, double.infinity);
     final prev = List<int>.filled(nodes.length, -1);
-    dist[from] = 0;
+    final done = List<bool>.filled(nodes.length, false);
+    walked[from] = 0;
+    // Ordered by (walked + estimate, node).
     final queue = SplayTreeSet<(double, int)>((x, y) => x.$1 != y.$1 ? x.$1.compareTo(y.$1) : x.$2.compareTo(y.$2))
-      ..add((0, from));
+      ..add((estimate(from), from));
+    lastSearchExpandedNodes = 0;
+
     while (queue.isNotEmpty) {
-      final (d, u) = queue.first;
+      final (_, u) = queue.first;
       queue.remove(queue.first);
+      if (done[u]) continue;
+      done[u] = true;
+      lastSearchExpandedNodes++;
       if (u == to) break;
-      if (d > dist[u]) continue;
       for (final (v, w) in _adjacency[u]) {
-        final nd = d + w;
-        if (nd < dist[v]) {
-          queue.remove((dist[v], v));
-          dist[v] = nd;
+        if (done[v]) continue;
+        final nd = walked[u] + w;
+        if (nd < walked[v]) {
+          if (walked[v] != double.infinity) queue.remove((walked[v] + estimate(v), v));
+          walked[v] = nd;
           prev[v] = u;
-          queue.add((nd, v));
+          queue.add((nd + estimate(v), v));
         }
       }
     }
-    if (dist[to] == double.infinity) return null;
+    if (walked[to] == double.infinity) return null;
     final path = <int>[to];
     while (path.last != from) {
       path.add(prev[path.last]);
@@ -189,7 +210,10 @@ class FloorGraph {
   /// anything anchored on its nodes (places, and links drawn from those
   /// places); nodes of later links are renumbered to match.
   ({List<Waypoint> waypoints, List<PathLink> links}) withoutLink(
-      int linkIndex, List<Waypoint> waypoints, List<PathLink> links) {
+    int linkIndex,
+    List<Waypoint> waypoints,
+    List<PathLink> links,
+  ) {
     // A node as (link, offset within it); link -1 is the walked path.
     (int, int) ref(int node) {
       final l = linkOfNode(node);

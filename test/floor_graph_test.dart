@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mapx/logic/floor_graph.dart';
 import 'package:mapx/models/map_models.dart';
@@ -23,6 +25,34 @@ double pathLength(FloorGraph g, List<int> path) {
     d += (Offset(a.east, a.north) - Offset(b.east, b.north)).distance;
   }
   return d;
+}
+
+/// Plain Dijkstra over [g]'s edges, as an independent reference for A*.
+({double distance, int expanded}) dijkstra(FloorGraph g, int from, int to) {
+  final adj = List.generate(g.nodes.length, (_) => <int>[]);
+  for (final (a, b) in g.edges) {
+    adj[a].add(b);
+    adj[b].add(a);
+  }
+  double w(int a, int b) =>
+      (Offset(g.nodes[a].east, g.nodes[a].north) - Offset(g.nodes[b].east, g.nodes[b].north)).distance;
+  final dist = List<double>.filled(g.nodes.length, double.infinity)..[from] = 0;
+  final done = List<bool>.filled(g.nodes.length, false);
+  var expanded = 0;
+  while (true) {
+    var u = -1;
+    for (var i = 0; i < g.nodes.length; i++) {
+      if (!done[i] && dist[i] < double.infinity && (u == -1 || dist[i] < dist[u])) u = i;
+    }
+    if (u == -1) break;
+    done[u] = true;
+    expanded++;
+    if (u == to) break;
+    for (final v in adj[u]) {
+      if (dist[u] + w(u, v) < dist[v]) dist[v] = dist[u] + w(u, v);
+    }
+  }
+  return (distance: dist[to], expanded: expanded);
 }
 
 void main() {
@@ -91,6 +121,67 @@ void main() {
     expect(r.links.single.toNode, isNull);
     final g2 = FloorGraph.build(uWalk(), 0, r.links);
     expect(g2.nodes[r.waypoints.single.globalStepIndex].east, closeTo(11, 1e-9));
+  });
+
+  group('A* search', () {
+    // Random floors: a walk with random turns plus random drawn and walked
+    // paths between random points, so there are many competing routes.
+    FloorGraph randomFloor(Random rng) {
+      final segments = <PathSegment>[];
+      for (var s = 0; s < 8; s++) {
+        final seg = PathSegment();
+        final heading = rng.nextDouble() * 360;
+        for (var i = 0; i < 3 + rng.nextInt(10); i++) {
+          seg.steps.add(RawStep(heading, 0.4 + rng.nextDouble() * 0.4));
+        }
+        segments.add(seg);
+      }
+      final walkCount = FloorGraph.walkNodes(segments, 0).length;
+      final links = [
+        for (var l = 0; l < 6; l++)
+          PathLink(
+            fromNode: rng.nextInt(walkCount),
+            toNode: l.isEven ? rng.nextInt(walkCount) : null,
+            bends: [
+              for (var b = 0; b < 1 + rng.nextInt(3); b++) (rng.nextDouble() * 20 - 10, rng.nextDouble() * 20 - 10),
+            ],
+          ),
+      ];
+      return FloorGraph.build(segments, 0, links);
+    }
+
+    test('finds the same shortest distance as Dijkstra', () {
+      final rng = Random(7);
+      for (var trial = 0; trial < 30; trial++) {
+        final g = randomFloor(rng);
+        for (var q = 0; q < 20; q++) {
+          final a = rng.nextInt(g.nodes.length), b = rng.nextInt(g.nodes.length);
+          final expected = dijkstra(g, a, b).distance;
+          final path = g.shortestPath(a, b);
+          if (expected == double.infinity) {
+            expect(path, isNull);
+          } else {
+            expect(pathLength(g, path!), closeTo(expected, 1e-9), reason: 'trial $trial, $a -> $b');
+            expect((path.first, path.last), (a, b));
+          }
+        }
+      }
+    });
+
+    test('explores less of the floor than Dijkstra', () {
+      // A 100m corridor with the start in the middle: Dijkstra spreads both
+      // ways, A* heads straight for the target.
+      final seg = PathSegment();
+      for (var i = 0; i < 200; i++) {
+        seg.steps.add(RawStep(90, 0.5));
+      }
+      final g = FloorGraph.build([seg], 0);
+      g.shortestPath(100, 200);
+      final aStar = g.lastSearchExpandedNodes;
+      final plain = dijkstra(g, 100, 200).expanded;
+      expect(aStar, 101);
+      expect(plain, greaterThan(aStar * 1.8));
+    });
   });
 
   group('deleting a drawn path', () {
