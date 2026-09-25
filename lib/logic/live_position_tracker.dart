@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/services.dart';
 
 import '../models/map_models.dart';
+import 'route_segment_manager.dart';
 
 /// A live snapshot of the walker's estimated position and device orientation
 /// during navigation, including ARCore floor plane detection metrics.
@@ -74,6 +75,7 @@ class LivePositionTracker {
   static const bool _stepDetectionEnabled = true;
 
   final List<PathNode> route;
+  final RouteSegmentManager segmentManager;
   late final List<double> _distances;
   late final double _totalDistance;
   double get totalDistance => _totalDistance;
@@ -122,8 +124,12 @@ class LivePositionTracker {
   double? _smoothedCameraHeight;
   double? _smoothedFov;
 
-  LivePositionTracker({required this.route, double startProgress = 0})
-      : _progress = startProgress,
+  LivePositionTracker({
+    required this.route,
+    double startProgress = 0,
+    RouteSegmentManager? segmentManager,
+  })  : segmentManager = segmentManager ?? RouteSegmentManager(route: route),
+        _progress = startProgress,
         _displayedProgress = startProgress {
     _distances = [0];
     for (var i = 1; i < route.length; i++) {
@@ -205,7 +211,29 @@ class LivePositionTracker {
         _lastPeakTime = now;
 
         if (_consecutivePeaks >= 2) {
-          final tangentHeadingDeg = _sampleAt(_progress).headingDeg;
+          double tangentHeadingDeg = _sampleAt(_progress).headingDeg;
+          final currentSeg = segmentManager.getSegmentForProgress(_progress);
+          final upcomingTurn = currentSeg.upcomingTurn;
+
+          if (upcomingTurn != null && upcomingTurn.isInTurnZone(_progress)) {
+            final deltaToTurn = _angleDiffDeg(heading, upcomingTurn.outgoingHeadingDeg).abs();
+            if (deltaToTurn <= 45.0) {
+              segmentManager.registerTurnCompleted(upcomingTurn);
+              if (_progress < upcomingTurn.distance) {
+                _progress = upcomingTurn.distance;
+                _displayedProgress = max(_displayedProgress, upcomingTurn.distance);
+              }
+              tangentHeadingDeg = upcomingTurn.outgoingHeadingDeg;
+            } else {
+              final deltaIncoming = _angleDiffDeg(heading, upcomingTurn.incomingHeadingDeg).abs();
+              if (deltaIncoming <= 45.0 && _progress <= upcomingTurn.maxValidDistance) {
+                tangentHeadingDeg = upcomingTurn.incomingHeadingDeg;
+              } else {
+                tangentHeadingDeg = upcomingTurn.outgoingHeadingDeg;
+              }
+            }
+          }
+
           final forward = _angleDiffDeg(heading, tangentHeadingDeg).abs() < 90.0;
           _progress = (_progress + (forward ? stepLengthMeters : -stepLengthMeters))
               .clamp(0.0, _totalDistance);

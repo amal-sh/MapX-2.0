@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../models/map_models.dart';
 import 'coordinate_transform.dart';
+import 'route_segment_manager.dart';
 import 'wall_collision_validator.dart';
 
 enum TrackingConfidence {
@@ -72,6 +73,7 @@ class SpatialSensorFusion {
   final List<PathNode> route;
   final List<WallSegment> mappedWalls;
   final double corridorHalfWidth;
+  final RouteSegmentManager segmentManager;
 
   late final List<double> _cumulativeDistances;
   late final double _totalRouteDistance;
@@ -133,7 +135,9 @@ class SpatialSensorFusion {
     this.mappedWalls = const [],
     this.corridorHalfWidth = 1.35,
     double startProgress = 0.0,
-  })  : _progress = startProgress,
+    RouteSegmentManager? segmentManager,
+  })  : segmentManager = segmentManager ?? RouteSegmentManager(route: route),
+        _progress = startProgress,
         _displayedProgress = startProgress {
     _cumulativeDistances = [0.0];
     for (var i = 1; i < route.length; i++) {
@@ -407,7 +411,34 @@ class SpatialSensorFusion {
 
     // 3. VIO Metric Displacement & Sensor Fusion with PDR Fallback
     double deltaProgress = 0.0;
-    final tangentHeadingDeg = _sampleAt(_progress).headingDeg;
+
+    // Evaluate effective corridor heading and turn tolerance:
+    double tangentHeadingDeg = _sampleAt(_progress).headingDeg;
+    final currentSeg = segmentManager.getSegmentForProgress(_progress);
+    final upcomingTurn = currentSeg.upcomingTurn;
+
+    if (upcomingTurn != null && upcomingTurn.isInTurnZone(_progress)) {
+      final deltaToTurn = _angleDiff(heading, upcomingTurn.outgoingHeadingDeg).abs();
+      if (deltaToTurn <= 45.0) {
+        // User turned into outgoing corridor within tolerance zone (+/- 1m)
+        segmentManager.registerTurnCompleted(upcomingTurn);
+        if (_progress < upcomingTurn.distance) {
+          // Early turn: advance progress to the turn point to activate next segment corridor
+          _progress = upcomingTurn.distance;
+          _displayedProgress = max(_displayedProgress, upcomingTurn.distance);
+        }
+        tangentHeadingDeg = upcomingTurn.outgoingHeadingDeg;
+      } else {
+        final deltaIncoming = _angleDiff(heading, upcomingTurn.incomingHeadingDeg).abs();
+        if (deltaIncoming <= 45.0 && _progress <= upcomingTurn.maxValidDistance) {
+          // User is still walking straight along incoming corridor in the tolerance zone
+          tangentHeadingDeg = upcomingTurn.incomingHeadingDeg;
+        } else {
+          tangentHeadingDeg = upcomingTurn.outgoingHeadingDeg;
+        }
+      }
+    }
+
     final headingDeltaDeg = _angleDiff(heading, tangentHeadingDeg);
     final absHeadingDelta = headingDeltaDeg.abs();
 
@@ -630,6 +661,7 @@ class SpatialSensorFusion {
 
   /// Resets all session tracking, accumulators, and PDR baselines for a new navigation run.
   void resetSession({double startProgress = 0.0}) {
+    segmentManager.reset();
     _progress = startProgress.clamp(0.0, _totalRouteDistance);
     _displayedProgress = _progress;
     _totalVioDisplacement = 0.0;

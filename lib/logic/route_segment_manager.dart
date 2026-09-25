@@ -3,17 +3,35 @@ import '../models/map_models.dart';
 
 /// Represents a distinct route decision point / turn along the path.
 class RouteTurnPoint {
+  static const double defaultToleranceMeters = 1.0;
+
   final int nodeIndex;
   final double distance;
   final double angleDeltaDeg;
   final String label;
+  final double incomingHeadingDeg;
+  final double outgoingHeadingDeg;
+  final double toleranceMeters;
 
   const RouteTurnPoint({
     required this.nodeIndex,
     required this.distance,
     required this.angleDeltaDeg,
     required this.label,
+    this.incomingHeadingDeg = 0.0,
+    this.outgoingHeadingDeg = 0.0,
+    this.toleranceMeters = defaultToleranceMeters,
   });
+
+  /// The start of the valid turn tolerance zone (1 meter before the turn).
+  double get minValidDistance => (distance - toleranceMeters).clamp(0.0, double.infinity);
+
+  /// The end of the valid turn tolerance zone (1 meter after the turn).
+  double get maxValidDistance => distance + toleranceMeters;
+
+  /// Checks if [progress] is within the +/- 1 meter valid turn tolerance zone.
+  bool isInTurnZone(double progress) =>
+      progress >= minValidDistance && progress <= maxValidDistance;
 }
 
 /// Represents a linear sub-path segment between decision points (turns) or endpoints.
@@ -61,6 +79,35 @@ class RouteSegmentManager {
   /// Distance threshold before a turn to trigger progressive reveal of the next segment.
   static const double turnApproachThresholdMeters = 1.2;
 
+  /// Valid turn tolerance distance (meters) before or after the exact mapped turn point.
+  static const double turnToleranceMeters = 1.0;
+
+  int _activeSegmentIndex = 0;
+  int get activeSegmentIndex => _activeSegmentIndex;
+
+  final Set<int> _completedTurnIndices = <int>{};
+  bool isTurnCompleted(int turnIndex) => _completedTurnIndices.contains(turnIndex);
+
+  void registerTurnCompleted(RouteTurnPoint turn) {
+    final idx = _turnPoints.indexOf(turn);
+    if (idx != -1) {
+      _completedTurnIndices.add(idx);
+      _activeSegmentIndex = max(_activeSegmentIndex, idx + 1);
+    }
+  }
+
+  void registerTurnCompletedByIndex(int turnIndex) {
+    if (turnIndex >= 0 && turnIndex < _turnPoints.length) {
+      _completedTurnIndices.add(turnIndex);
+      _activeSegmentIndex = max(_activeSegmentIndex, turnIndex + 1);
+    }
+  }
+
+  void reset() {
+    _activeSegmentIndex = 0;
+    _completedTurnIndices.clear();
+  }
+
   RouteSegmentManager({required this.route}) {
     _computeCumulativeDistances();
     _computeTurnPoints();
@@ -91,11 +138,30 @@ class RouteSegmentManager {
       if (delta.abs() > 15.0) {
         final dist = _cumulativeDistances[i];
         final label = _classifyTurn(delta);
+
+        // Incoming segment heading
+        final deIn = cur.east - prev.east;
+        final dnIn = cur.north - prev.north;
+        final inHeading = (sqrt(deIn * deIn + dnIn * dnIn) > 0.001)
+            ? (atan2(deIn, dnIn) * 180.0 / pi + 360.0) % 360.0
+            : prev.heading;
+
+        // Outgoing segment heading
+        final next = route[i + 1];
+        final deOut = next.east - cur.east;
+        final dnOut = next.north - cur.north;
+        final outHeading = (sqrt(deOut * deOut + dnOut * dnOut) > 0.001)
+            ? (atan2(deOut, dnOut) * 180.0 / pi + 360.0) % 360.0
+            : cur.heading;
+
         _turnPoints.add(RouteTurnPoint(
           nodeIndex: i,
           distance: dist,
           angleDeltaDeg: delta,
           label: label,
+          incomingHeadingDeg: inHeading,
+          outgoingHeadingDeg: outHeading,
+          toleranceMeters: turnToleranceMeters,
         ));
       }
     }
@@ -149,14 +215,49 @@ class RouteSegmentManager {
     return 'Bear $dir';
   }
 
-  /// Evaluates which decision segment the user is currently on.
+  /// Evaluates which decision segment the user is currently on, taking into account
+  /// turn completions and turn tolerance.
   RouteDecisionSegment getSegmentForProgress(double currentProgress) {
     final s = currentProgress.clamp(0.0, _totalDistance);
-    for (final seg in _segments) {
-      if (s >= seg.startDistance && s <= seg.endDistance) {
+
+    // If an active segment is tracked:
+    if (_activeSegmentIndex < _segments.length) {
+      final activeSeg = _segments[_activeSegmentIndex];
+      final upcomingTurn = activeSeg.upcomingTurn;
+      final prevTurn = _activeSegmentIndex > 0 ? _turnPoints[_activeSegmentIndex - 1] : null;
+
+      final minAllowed = (prevTurn != null && _completedTurnIndices.contains(_activeSegmentIndex - 1))
+          ? prevTurn.minValidDistance
+          : activeSeg.startDistance;
+
+      final maxAllowed = (upcomingTurn != null && !_completedTurnIndices.contains(_activeSegmentIndex))
+          ? upcomingTurn.maxValidDistance
+          : activeSeg.endDistance;
+
+      if (s >= minAllowed && s <= maxAllowed) {
+        return activeSeg;
+      }
+    }
+
+    // Check all segments respecting uncompleted turn late tolerance and completed turn early tolerance
+    for (var i = 0; i < _segments.length; i++) {
+      final seg = _segments[i];
+      final upcomingTurn = seg.upcomingTurn;
+      final prevTurn = i > 0 ? _turnPoints[i - 1] : null;
+
+      final minAllowed = (prevTurn != null && _completedTurnIndices.contains(i - 1))
+          ? prevTurn.minValidDistance
+          : seg.startDistance;
+
+      final maxAllowed = (upcomingTurn != null && !_completedTurnIndices.contains(i))
+          ? upcomingTurn.maxValidDistance
+          : seg.endDistance;
+
+      if (s >= minAllowed && s <= maxAllowed) {
         return seg;
       }
     }
+
     return _segments.isNotEmpty ? _segments.last : const RouteDecisionSegment(
       segmentIndex: 0,
       startDistance: 0.0,
@@ -243,26 +344,42 @@ class RouteSegmentManager {
   double sampleTargetBearing(
     double currentProgress, {
     double lookaheadMeters = defaultLookaheadMeters,
+    double? userHeadingDeg,
     double? userEast,
     double? userNorth,
   }) {
     final sCurrent = currentProgress.clamp(0.0, _totalDistance);
 
-    // Lookahead clamping: when approaching an upcoming turn (more than 0.6m away),
-    // strictly track the current corridor's direction up to the turn point.
-    // Do NOT look around the corner into the next corridor prematurely,
-    // so the user isn't asked to turn until they physically reach the turn point.
+    // Lookahead clamping: when approaching an upcoming turn,
+    // strictly track current corridor up to the turn zone (+/- 1m tolerance).
+    // Within the tolerance zone or after turn completion, look ahead into the new corridor.
     final currentSeg = getSegmentForProgress(sCurrent);
     final upcomingTurn = currentSeg.upcomingTurn;
 
     double sAhead;
     if (upcomingTurn != null) {
       final distToTurn = upcomingTurn.distance - sCurrent;
-      if (distToTurn > 0.6) {
-        // Approaching the turn: keep target bearing locked straight ahead along current corridor
+      final inTurnZone = upcomingTurn.isInTurnZone(sCurrent);
+
+      if (inTurnZone) {
+        // Within +/- 1m tolerance zone:
+        // If user is already facing the new corridor or turning, look into new corridor
+        if (userHeadingDeg != null) {
+          final deltaOut = computeHeadingDelta(userHeadingDeg, upcomingTurn.outgoingHeadingDeg).abs();
+          if (deltaOut <= defaultFacingThresholdDeg + 10.0) {
+            sAhead = min(_totalDistance, upcomingTurn.distance + max(1.0, lookaheadMeters));
+          } else {
+            // Still facing straight into turn zone
+            sAhead = min(upcomingTurn.distance, sCurrent + lookaheadMeters);
+          }
+        } else {
+          sAhead = min(_totalDistance, upcomingTurn.distance + max(1.0, lookaheadMeters));
+        }
+      } else if (distToTurn > turnToleranceMeters) {
+        // Approaching turn before tolerance zone: keep locked to current corridor
         sAhead = min(upcomingTurn.distance, sCurrent + lookaheadMeters);
       } else {
-        // At the exact turn point (within 0.6m): look past the turn into the new corridor
+        // Past the turn tolerance zone: look ahead along next corridor
         sAhead = min(_totalDistance, upcomingTurn.distance + max(1.0, lookaheadMeters));
       }
     } else {
@@ -291,6 +408,74 @@ class RouteSegmentManager {
 
     final bearingRad = atan2(de, dn);
     return (bearingRad * 180.0 / pi + 360.0) % 360.0;
+  }
+
+  /// Evaluates whether the user's device is facing toward the intended path,
+  /// honoring the +/- 1 meter turn tolerance zone.
+  ///
+  /// In the [turn - 1m, turn + 1m] zone:
+  /// - Turning early or late into the turn direction is VALID.
+  /// - Continuing straight along the incoming corridor is VALID.
+  /// - Facing away from both is treated as off-path / wrong turn.
+  ({
+    bool isFacingPath,
+    double deltaDegrees,
+    String turnDirection, // 'left', 'right', or 'straight'
+  }) evaluateFacingWithTolerance({
+    required double userHeadingDeg,
+    required double currentProgress,
+    double? targetBearingDeg,
+    double thresholdDeg = defaultFacingThresholdDeg,
+  }) {
+    final s = currentProgress.clamp(0.0, _totalDistance);
+    final currentSeg = getSegmentForProgress(s);
+    final upcomingTurn = currentSeg.upcomingTurn;
+
+    if (upcomingTurn != null && upcomingTurn.isInTurnZone(s)) {
+      // User is within the +/- 1 meter turn tolerance zone:
+      // 1. Check if user turned towards outgoing corridor (valid early/on-time/late turn!)
+      final deltaOut = computeHeadingDelta(userHeadingDeg, upcomingTurn.outgoingHeadingDeg);
+      if (deltaOut.abs() <= thresholdDeg + 10.0) {
+        registerTurnCompleted(upcomingTurn);
+        return (
+          isFacingPath: true,
+          deltaDegrees: deltaOut,
+          turnDirection: 'straight',
+        );
+      }
+
+      // 2. Check if user is still walking straight along incoming corridor (has not turned yet)
+      final deltaIn = computeHeadingDelta(userHeadingDeg, upcomingTurn.incomingHeadingDeg);
+      if (deltaIn.abs() <= thresholdDeg + 10.0) {
+        return (
+          isFacingPath: true,
+          deltaDegrees: deltaIn,
+          turnDirection: 'straight',
+        );
+      }
+
+      // 3. User is facing neither incoming nor outgoing corridor in the turn zone
+      final turnDir = upcomingTurn.angleDeltaDeg > 0 ? 'right' : 'left';
+      return (
+        isFacingPath: false,
+        deltaDegrees: deltaOut,
+        turnDirection: turnDir,
+      );
+    }
+
+    // Outside of turn tolerance zone: standard target bearing evaluation
+    final target = targetBearingDeg ?? sampleTargetBearing(s, userHeadingDeg: userHeadingDeg);
+    final delta = computeHeadingDelta(userHeadingDeg, target);
+    final isFacing = delta.abs() <= thresholdDeg;
+    final turnDir = isFacing
+        ? 'straight'
+        : (delta > 0 ? 'right' : 'left');
+
+    return (
+      isFacingPath: isFacing,
+      deltaDegrees: delta,
+      turnDirection: turnDir,
+    );
   }
 
   /// Computes signed angle delta (degrees) between target bearing and user heading:
