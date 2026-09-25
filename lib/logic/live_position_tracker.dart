@@ -18,6 +18,9 @@ class LivePosition {
   final double cameraHeight;
   final double verticalFovDegrees;
   final String arTrackingState;
+  final bool isTravelingBackward;
+  final double extraTurnDistance;
+  final double remainingDistanceMeters;
 
   const LivePosition({
     required this.east,
@@ -29,6 +32,9 @@ class LivePosition {
     this.cameraHeight = 1.35,
     this.verticalFovDegrees = 60.0,
     this.arTrackingState = 'INITIALIZING',
+    this.isTravelingBackward = false,
+    this.extraTurnDistance = 0.0,
+    this.remainingDistanceMeters = 0.0,
   });
 }
 
@@ -154,7 +160,11 @@ class LivePositionTracker {
   ({double east, double north, double headingDeg}) _sampleAt(double dist) {
     final clamped = dist.clamp(0.0, _totalDistance);
     for (var i = 0; i < route.length - 1; i++) {
-      if (clamped >= _distances[i] && clamped <= _distances[i + 1]) {
+      final isLast = (i == route.length - 2);
+      final inSegment = isLast
+          ? (clamped >= _distances[i] && clamped <= _distances[i + 1])
+          : (clamped >= _distances[i] && clamped < _distances[i + 1]);
+      if (inSegment) {
         final span = _distances[i + 1] - _distances[i];
         final u = span > 0.0001 ? (clamped - _distances[i]) / span : 0.0;
         final a = route[i];
@@ -218,11 +228,9 @@ class LivePositionTracker {
           if (upcomingTurn != null && upcomingTurn.isInTurnZone(_progress)) {
             final deltaToTurn = _angleDiffDeg(heading, upcomingTurn.outgoingHeadingDeg).abs();
             if (deltaToTurn <= 45.0) {
-              segmentManager.registerTurnCompleted(upcomingTurn);
-              if (_progress < upcomingTurn.distance) {
-                _progress = upcomingTurn.distance;
-                _displayedProgress = max(_displayedProgress, upcomingTurn.distance);
-              }
+              segmentManager.registerTurnCompleted(upcomingTurn, currentProgress: _progress);
+              _progress = upcomingTurn.distance;
+              _displayedProgress = upcomingTurn.distance;
               tangentHeadingDeg = upcomingTurn.outgoingHeadingDeg;
             } else {
               final deltaIncoming = _angleDiffDeg(heading, upcomingTurn.incomingHeadingDeg).abs();
@@ -234,9 +242,11 @@ class LivePositionTracker {
             }
           }
 
-          final forward = _angleDiffDeg(heading, tangentHeadingDeg).abs() < 90.0;
+          final headingDelta = _angleDiffDeg(heading, tangentHeadingDeg).abs();
+          final forward = headingDelta < 90.0;
           _progress = (_progress + (forward ? stepLengthMeters : -stepLengthMeters))
               .clamp(0.0, _totalDistance);
+          segmentManager.syncProgress(_progress);
         }
       }
     }
@@ -261,6 +271,9 @@ class LivePositionTracker {
     _smoothedCameraHeight = _lerp(_smoothedCameraHeight, floorHeightRaw, 0.1);
     _smoothedFov = _lerp(_smoothedFov, fovRaw, 0.1);
 
+    final headingDelta = _angleDiffDeg(smoothedHeadingDeg, sample.headingDeg).abs();
+    final isTravelingBackward = (headingDelta - 180.0).abs() <= 55.0;
+
     _controller.add(LivePosition(
       east: sample.east,
       north: sample.north,
@@ -271,6 +284,9 @@ class LivePositionTracker {
       cameraHeight: _smoothedCameraHeight ?? 1.35,
       verticalFovDegrees: _smoothedFov ?? 60.0,
       arTrackingState: arTrackingState,
+      isTravelingBackward: isTravelingBackward,
+      extraTurnDistance: segmentManager.extraTurnPenaltyDistance,
+      remainingDistanceMeters: segmentManager.getRemainingDistance(_displayedProgress),
     ));
   }
 

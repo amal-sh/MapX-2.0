@@ -7,12 +7,14 @@ class OffPathDirectionPrompt extends StatefulWidget {
   final double deltaDegrees; // signed: negative = turn left, positive = turn right
   final String turnDirection; // 'left' or 'right'
   final bool isAtTurn; // true if user is at the exact decision/turn vertex
+  final bool isTravelingBackward;
 
   const OffPathDirectionPrompt({
     super.key,
     required this.deltaDegrees,
     required this.turnDirection,
     this.isAtTurn = false,
+    this.isTravelingBackward = false,
   });
 
   @override
@@ -50,6 +52,7 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
 
   @override
   Widget build(BuildContext context) {
+    final isBackward = widget.isTravelingBackward;
     final isLeft = widget.turnDirection == 'left';
     final angle = widget.deltaDegrees.abs();
 
@@ -66,12 +69,14 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
               color: Colors.black.withValues(alpha: 0.94),
               borderRadius: BorderRadius.circular(24),
               border: Border.all(
-                color: Colors.white,
-                width: 1.4,
+                color: isBackward ? const Color(0xFFF59E0B) : Colors.white,
+                width: isBackward ? 2.0 : 1.4,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.5),
+                  color: isBackward
+                      ? const Color(0xFFF59E0B).withValues(alpha: 0.3)
+                      : Colors.black.withValues(alpha: 0.5),
                   blurRadius: 20,
                   offset: const Offset(0, 6),
                 ),
@@ -84,7 +89,16 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (isLeft)
+                    if (isBackward)
+                      Transform.scale(
+                        scale: _pulseAnimation.value,
+                        child: const Icon(
+                          CupertinoIcons.arrow_uturn_down,
+                          color: Color(0xFFF59E0B),
+                          size: 30,
+                        ),
+                      )
+                    else if (isLeft)
                       Transform.translate(
                         offset: Offset(slideOffset, 0),
                         child: Transform.scale(
@@ -102,21 +116,25 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         Text(
-                          widget.isAtTurn
-                              ? (isLeft ? 'TURN LEFT NOW' : 'TURN RIGHT NOW')
-                              : (isLeft ? 'TURN LEFT ${angle.toStringAsFixed(0)}°' : 'TURN RIGHT ${angle.toStringAsFixed(0)}°'),
-                          style: const TextStyle(
-                            color: Colors.white,
+                          isBackward
+                              ? 'WRONG DIRECTION — TURN AROUND'
+                              : (widget.isAtTurn
+                                  ? (isLeft ? 'TURN LEFT NOW' : 'TURN RIGHT NOW')
+                                  : (isLeft ? 'TURN LEFT ${angle.toStringAsFixed(0)}°' : 'TURN RIGHT ${angle.toStringAsFixed(0)}°')),
+                          style: TextStyle(
+                            color: isBackward ? const Color(0xFFF59E0B) : Colors.white,
                             fontWeight: FontWeight.w800,
-                            fontSize: 17,
+                            fontSize: isBackward ? 15 : 17,
                             letterSpacing: 0.5,
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          widget.isAtTurn
-                              ? 'Turn at the corner to follow path'
-                              : 'Face towards path to continue',
+                          isBackward
+                              ? 'You are moving away from destination'
+                              : (widget.isAtTurn
+                                  ? 'Turn at the corner to follow path'
+                                  : 'Face towards path to continue'),
                           style: const TextStyle(
                             color: Color(0xFFA1A1AA),
                             fontSize: 12,
@@ -126,7 +144,16 @@ class _OffPathDirectionPromptState extends State<OffPathDirectionPrompt>
                       ],
                     ),
                     const SizedBox(width: 12),
-                    if (!isLeft)
+                    if (isBackward)
+                      Transform.scale(
+                        scale: _pulseAnimation.value,
+                        child: const Icon(
+                          CupertinoIcons.arrow_uturn_down,
+                          color: Color(0xFFF59E0B),
+                          size: 30,
+                        ),
+                      )
+                    else if (!isLeft)
                       Transform.translate(
                         offset: Offset(slideOffset, 0),
                         child: Transform.scale(

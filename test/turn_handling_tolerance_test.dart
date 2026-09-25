@@ -262,5 +262,153 @@ void main() {
       expect(fusion.currentProgress, greaterThanOrEqualTo(10.0));
       expect(manager.activeSegmentIndex, equals(1));
     });
+
+    test('Early turn (1m early at 9.0m) counts 1.0m extra distance to destination', () {
+      final manager = RouteSegmentManager(route: rightTurnRoute);
+      final turn = manager.turnPoints.first;
+
+      // User makes early turn at 9.0m (1m before 10.0m turn point)
+      manager.registerTurnCompleted(turn, currentProgress: 9.0);
+
+      expect(manager.isTurnCompleted(0), isTrue);
+      expect(manager.extraTurnPenaltyDistance, equals(1.0));
+      // At progress 10.0m (start of new corridor), remaining distance is (20.0 - 10.0) + 1.0 = 11.0m
+      expect(manager.getRemainingDistance(10.0), equals(11.0));
+    });
+
+    test('Late turn (1m late at 11.0m) counts 1.0m extra distance to destination', () {
+      final manager = RouteSegmentManager(route: rightTurnRoute);
+      final turn = manager.turnPoints.first;
+
+      // User makes late turn at 11.0m (1m past 10.0m turn point)
+      manager.registerTurnCompleted(turn, currentProgress: 11.0);
+
+      expect(manager.isTurnCompleted(0), isTrue);
+      expect(manager.extraTurnPenaltyDistance, equals(1.0));
+      // At progress 10.0m (start of new corridor), remaining distance is (20.0 - 10.0) + 1.0 = 11.0m
+      expect(manager.getRemainingDistance(10.0), equals(11.0));
+    });
+
+    test('Distance tracking continues advancing after turn without freezing at vertex', () {
+      final manager = RouteSegmentManager(route: rightTurnRoute);
+      final fusion = SpatialSensorFusion(
+        route: rightTurnRoute,
+        segmentManager: manager,
+        startProgress: 9.5, // Starting in turn zone
+      );
+
+      // Frame 1: complete the turn facing 90°
+      fusion.processPoseEvent({
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 90.0,
+        'renderHeading': 90.0,
+        'tilt': 0.0,
+        'motion': 0.6,
+        'timestamp': 1000000000,
+        'floorDetected': true,
+        'floorConfidence': 0.9,
+        'arTrackingState': 'TRACKING',
+      });
+
+      expect(manager.isTurnCompleted(0), isTrue);
+      expect(fusion.currentProgress, equals(10.0));
+
+      // Frames 2-5: continue walking forward East along new corridor (x increases)
+      for (var step = 1; step <= 5; step++) {
+        fusion.processPoseEvent({
+          'x': step * 0.6,
+          'y': 0.0,
+          'z': 0.0,
+          'heading': 90.0,
+          'renderHeading': 90.0,
+          'tilt': 0.0,
+          'motion': 0.6,
+          'timestamp': 1000000000 + (step * 500000000),
+          'floorDetected': true,
+          'floorConfidence': 0.9,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Must have continued advancing along the second corridor!
+      expect(fusion.currentProgress, greaterThan(11.5));
+      expect(fusion.currentProgress, lessThanOrEqualTo(20.0));
+    });
+
+    test('Backward travel tracking: walking in reverse decreases progress', () {
+      final manager = RouteSegmentManager(route: rightTurnRoute);
+      final fusion = SpatialSensorFusion(
+        route: rightTurnRoute,
+        segmentManager: manager,
+        startProgress: 5.0, // Mid-segment 0 heading North
+      );
+
+      // Turn around facing 180° (South, opposite to route heading 0°)
+      fusion.processPoseEvent({
+        'x': 0.0,
+        'y': 0.0,
+        'z': 0.0,
+        'heading': 180.0,
+        'renderHeading': 180.0,
+        'tilt': 0.0,
+        'motion': 0.6,
+        'timestamp': 1000000000,
+        'floorDetected': true,
+        'floorConfidence': 0.9,
+        'arTrackingState': 'TRACKING',
+      });
+
+      // Walk backward along corridor
+      for (var step = 1; step <= 3; step++) {
+        fusion.processPoseEvent({
+          'x': 0.0,
+          'y': 0.0,
+          'z': step * 0.5,
+          'heading': 180.0,
+          'renderHeading': 180.0,
+          'tilt': 0.0,
+          'motion': 0.6,
+          'timestamp': 1000000000 + (step * 500000000),
+          'floorDetected': true,
+          'floorConfidence': 0.9,
+          'arTrackingState': 'TRACKING',
+        });
+      }
+
+      // Progress decreased (moved back towards 0m)
+      expect(fusion.currentProgress, lessThan(5.0));
+    });
+
+    test('Dynamic segment rollback: backtracking across turn resets turn completion', () {
+      final manager = RouteSegmentManager(route: rightTurnRoute);
+      final turn = manager.turnPoints.first;
+
+      // Complete turn at 10.0m
+      manager.registerTurnCompleted(turn, currentProgress: 10.0);
+      expect(manager.isTurnCompleted(0), isTrue);
+      expect(manager.activeSegmentIndex, equals(1));
+
+      // User backtracks past the turn vertex (progress drops to 9.0m)
+      manager.syncProgress(9.0);
+
+      // Segment should roll back to 0 and turn becomes pending again
+      expect(manager.activeSegmentIndex, equals(0));
+      expect(manager.isTurnCompleted(0), isFalse);
+    });
+
+    test('Wrong direction / backward travel awareness detection', () {
+      final manager = RouteSegmentManager(route: rightTurnRoute);
+
+      // User heading 180° when target bearing is 0°
+      final facingEval = manager.evaluateFacingWithTolerance(
+        userHeadingDeg: 180.0,
+        currentProgress: 5.0,
+      );
+
+      expect(facingEval.isFacingPath, isFalse);
+      expect(facingEval.isTravelingBackward, isTrue);
+    });
   });
 }

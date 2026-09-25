@@ -36,6 +36,9 @@ class FusedPosition {
   final bool depthAvailable;
   final int stepCount;
   final double actualStrideLength;
+  final bool isTravelingBackward;
+  final double extraTurnDistance;
+  final double remainingDistanceMeters;
 
   const FusedPosition({
     required this.east,
@@ -57,6 +60,9 @@ class FusedPosition {
     this.depthAvailable = false,
     this.stepCount = 0,
     this.actualStrideLength = 0.5,
+    this.isTravelingBackward = false,
+    this.extraTurnDistance = 0.0,
+    this.remainingDistanceMeters = 0.0,
   });
 }
 
@@ -161,7 +167,11 @@ class SpatialSensorFusion {
   ({double east, double north, double headingDeg}) _sampleAt(double dist) {
     final clamped = dist.clamp(0.0, _totalRouteDistance);
     for (var i = 0; i < route.length - 1; i++) {
-      if (clamped >= _cumulativeDistances[i] && clamped <= _cumulativeDistances[i + 1]) {
+      final isLast = (i == route.length - 2);
+      final inSegment = isLast
+          ? (clamped >= _cumulativeDistances[i] && clamped <= _cumulativeDistances[i + 1])
+          : (clamped >= _cumulativeDistances[i] && clamped < _cumulativeDistances[i + 1]);
+      if (inSegment) {
         final span = _cumulativeDistances[i + 1] - _cumulativeDistances[i];
         final u = span > 0.0001 ? (clamped - _cumulativeDistances[i]) / span : 0.0;
         final a = route[i];
@@ -421,12 +431,10 @@ class SpatialSensorFusion {
       final deltaToTurn = _angleDiff(heading, upcomingTurn.outgoingHeadingDeg).abs();
       if (deltaToTurn <= 45.0) {
         // User turned into outgoing corridor within tolerance zone (+/- 1m)
-        segmentManager.registerTurnCompleted(upcomingTurn);
-        if (_progress < upcomingTurn.distance) {
-          // Early turn: advance progress to the turn point to activate next segment corridor
-          _progress = upcomingTurn.distance;
-          _displayedProgress = max(_displayedProgress, upcomingTurn.distance);
-        }
+        segmentManager.registerTurnCompleted(upcomingTurn, currentProgress: _progress);
+        // Anchor progress to the turn point on the route so new corridor starts cleanly
+        _progress = upcomingTurn.distance;
+        _displayedProgress = upcomingTurn.distance;
         tangentHeadingDeg = upcomingTurn.outgoingHeadingDeg;
       } else {
         final deltaIncoming = _angleDiff(heading, upcomingTurn.incomingHeadingDeg).abs();
@@ -447,7 +455,9 @@ class SpatialSensorFusion {
     // Between 45° and 75°, smooth roll-off to 0.0.
     // Beyond 75° (facing wall / sideways), scale is 0.0 (progress inhibited).
     // For reverse direction (180° +/- 45°), scale is -1.0.
-    final isFacingPath = absHeadingDelta <= 55.0;
+    final isFacingForward = absHeadingDelta <= 55.0;
+    final isFacingBackward = (absHeadingDelta - 180.0).abs() <= 55.0;
+    final isAlignedWithCorridor = isFacingForward || isFacingBackward;
 
     double corridorScale = 0.0;
     if (absHeadingDelta <= 45.0) {
@@ -520,11 +530,11 @@ class SpatialSensorFusion {
               }
 
               // True Anti-Slippage Fallback:
-              // ONLY when facing along path corridor, NOT adjusting device, and confirmed gait rhythm.
+              // When facing along path corridor, NOT adjusting device, and confirmed gait rhythm.
               // Note: When ARCore is tracking properly with good floor confidence, trust VIO ground truth!
               // Anti-slippage fallback is strictly for when visual tracking is degraded.
               final isReliableVio = isTracking && floorConfidence >= 0.35;
-              if (!isReliableVio && _vioDistSinceLastStep < 0.15 && isFacingPath && !isDeviceAdjusting && _isGaitActive) {
+              if (!isReliableVio && _vioDistSinceLastStep < 0.15 && isAlignedWithCorridor && !isDeviceAdjusting && _isGaitActive) {
                 final pdrDelta = _strideLengthEstimate * corridorScale;
                 if (pdrDelta.abs() > deltaProgress.abs()) {
                   deltaProgress = pdrDelta;
@@ -544,7 +554,7 @@ class SpatialSensorFusion {
       }
     } else {
       // TRACKING LOST OR DEGRADED: PDR Dead-Reckoning Fallback
-      if (isStepEvent && isFacingPath && !isDeviceAdjusting && _isGaitActive) {
+      if (isStepEvent && isAlignedWithCorridor && !isDeviceAdjusting && _isGaitActive) {
         deltaProgress = _strideLengthEstimate * corridorScale;
         _totalVioDisplacement += deltaProgress.abs();
       }
@@ -564,10 +574,10 @@ class SpatialSensorFusion {
     _isDrifting = false;
     _driftReason = '';
 
-    // Check A: Wall Penetration
+    // Check A: Wall Penetration (only validate when moving forward)
     final currentPos = _sampleAt(_progress);
     final allWalls = [...mappedWalls, ...detectedWalls];
-    final wallBlocked = (proposedProgress != _progress) && WallCollisionValidator.isLineOfSightBlocked(
+    final wallBlocked = (proposedProgress > _progress) && WallCollisionValidator.isLineOfSightBlocked(
       startEast: currentPos.east,
       startNorth: currentPos.north,
       targetEast: proposedPos.east,
@@ -582,6 +592,9 @@ class SpatialSensorFusion {
     } else {
       _progress = proposedProgress;
     }
+
+    // Sync segment rollback if walking backward
+    segmentManager.syncProgress(_progress);
 
     // Check B: VIO vs PDR Disparity check
     if (_totalVioDisplacement > 10.0 && _totalPdrDisplacement > 6.0) {
@@ -622,6 +635,8 @@ class SpatialSensorFusion {
       confidence = TrackingConfidence.medium;
     }
 
+    final bool isTravelingBackward = isFacingBackward && (deltaProgress < -0.005 || (_isGaitActive && corridorScale < -0.5));
+
     _controller.add(FusedPosition(
       east: finalSample.east,
       north: finalSample.north,
@@ -642,6 +657,9 @@ class SpatialSensorFusion {
       depthAvailable: depthAvailable,
       stepCount: _stepCount,
       actualStrideLength: _strideLengthEstimate,
+      isTravelingBackward: isTravelingBackward,
+      extraTurnDistance: segmentManager.extraTurnPenaltyDistance,
+      remainingDistanceMeters: segmentManager.getRemainingDistance(_displayedProgress),
     ));
   }
 

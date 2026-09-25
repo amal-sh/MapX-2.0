@@ -109,6 +109,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     @Volatile
     private var floorConfidence = 0f
     @Volatile
+    private var floorLossFrames = 0
+    private val maxFloorLossFrames = 60 // ~1.5 - 2.0s hysteresis grace period
+    @Volatile
     private var cameraFovY = 60.0f
     @Volatile
     private var arTrackingState = "INITIALIZING"
@@ -481,15 +484,19 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                         }
                     }
 
-                    // 1. Multi-point floor raycast in the lower region of screen
+                    // 1. Multi-point floor raycast in the lower region of screen (9 sample points for robust floor coverage)
                     val w = width.toFloat()
                     val h = height.toFloat()
                     val samplePoints = listOf(
                         Pair(0.50f, 0.75f),
-                        Pair(0.35f, 0.70f),
-                        Pair(0.65f, 0.70f),
+                        Pair(0.30f, 0.75f),
+                        Pair(0.70f, 0.75f),
                         Pair(0.50f, 0.60f),
-                        Pair(0.50f, 0.85f)
+                        Pair(0.30f, 0.60f),
+                        Pair(0.70f, 0.60f),
+                        Pair(0.50f, 0.90f),
+                        Pair(0.30f, 0.88f),
+                        Pair(0.70f, 0.88f)
                     )
 
                     var validFloorHits = 0
@@ -507,8 +514,8 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                                 val camPose = camera.pose
                                 val hitPose = hits.hitPose
                                 val diff = camPose.ty() - hitPose.ty()
-                                // Valid human eye/chest height to floor: 0.9m to 2.1m
-                                if (diff in 0.9f..2.1f) {
+                                // Valid human eye/chest height to floor: 0.8m to 2.2m
+                                if (diff in 0.8f..2.2f) {
                                     validFloorHits++
                                     sumFloorY += diff
                                 }
@@ -520,29 +527,42 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                         val measured = sumFloorY / validFloorHits
                         floorHeight = floorHeight * 0.85f + measured * 0.15f
                         floorDetected = true
-                        floorConfidence = (validFloorHits.toFloat() / samplePoints.size.toFloat()).coerceIn(0.2f, 1.0f)
+                        floorConfidence = (validFloorHits.toFloat() / samplePoints.size.toFloat()).coerceIn(0.4f, 1.0f)
+                        floorLossFrames = 0
                     } else {
-                        // 2. Fallback: query all active horizontal upward planes with minimum area
+                        // 2. Fallback: query all active horizontal upward planes
                         val planes = arFrame.session.getAllTrackables(Plane::class.java)
                         val validFloorPlanes = planes.filter {
                             it.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
-                            it.trackingState == TrackingState.TRACKING &&
-                            (it.extentX * it.extentZ >= 0.25f)
+                            it.trackingState == TrackingState.TRACKING
                         }
+                        var fallbackFound = false
                         if (validFloorPlanes.isNotEmpty()) {
                             val camY = camera.pose.ty()
                             val closestPlane = validFloorPlanes.minByOrNull { abs(camY - it.centerPose.ty()) }
                             if (closestPlane != null) {
                                 val diff = camY - closestPlane.centerPose.ty()
-                                if (diff in 0.9f..2.1f) {
+                                if (diff in 0.8f..2.2f) {
                                     floorHeight = floorHeight * 0.85f + diff * 0.15f
                                     floorDetected = true
-                                    floorConfidence = 0.4f
+                                    floorConfidence = 0.5f
+                                    floorLossFrames = 0
+                                    fallbackFound = true
                                 }
                             }
-                        } else {
-                            floorDetected = false
-                            floorConfidence = 0f
+                        }
+                        if (!fallbackFound) {
+                            // 3. Temporal hysteresis grace period:
+                            // If camera is still actively tracking in 6-DOF, do NOT drop floor instantly during turns or brief misses!
+                            if (state == TrackingState.TRACKING && floorDetected && floorLossFrames < maxFloorLossFrames) {
+                                floorLossFrames++
+                                val decayFraction = 1f - (floorLossFrames.toFloat() / maxFloorLossFrames.toFloat())
+                                floorConfidence = (0.45f * decayFraction).coerceAtLeast(0.36f)
+                                floorDetected = true
+                            } else {
+                                floorDetected = false
+                                floorConfidence = 0f
+                            }
                         }
                     }
 
@@ -589,6 +609,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                         }
                     } catch (_: Exception) {}
                 } else {
+                    floorLossFrames = maxFloorLossFrames
                     floorDetected = false
                     floorConfidence = 0f
                 }

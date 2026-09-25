@@ -88,24 +88,58 @@ class RouteSegmentManager {
   final Set<int> _completedTurnIndices = <int>{};
   bool isTurnCompleted(int turnIndex) => _completedTurnIndices.contains(turnIndex);
 
-  void registerTurnCompleted(RouteTurnPoint turn) {
+  /// Stores distance offsets (|progress - turnDistance|) for completed turns.
+  final Map<int, double> _turnOffsets = <int, double>{};
+
+  /// Total extra penalty distance accumulated by early or late turns (meters).
+  double get extraTurnPenaltyDistance => _turnOffsets.values.fold(0.0, (sum, val) => sum + val);
+
+  void registerTurnCompleted(RouteTurnPoint turn, {double? currentProgress}) {
     final idx = _turnPoints.indexOf(turn);
     if (idx != -1) {
       _completedTurnIndices.add(idx);
       _activeSegmentIndex = max(_activeSegmentIndex, idx + 1);
+      if (currentProgress != null) {
+        final offset = (currentProgress - turn.distance).abs().clamp(0.0, turn.toleranceMeters);
+        _turnOffsets[idx] = offset;
+      }
     }
   }
 
-  void registerTurnCompletedByIndex(int turnIndex) {
+  void registerTurnCompletedByIndex(int turnIndex, {double? currentProgress}) {
     if (turnIndex >= 0 && turnIndex < _turnPoints.length) {
       _completedTurnIndices.add(turnIndex);
       _activeSegmentIndex = max(_activeSegmentIndex, turnIndex + 1);
+      if (currentProgress != null) {
+        final turn = _turnPoints[turnIndex];
+        final offset = (currentProgress - turn.distance).abs().clamp(0.0, turn.toleranceMeters);
+        _turnOffsets[turnIndex] = offset;
+      }
     }
+  }
+
+  /// Synchronizes active segment index and completed turns when user travels backward.
+  void syncProgress(double currentProgress) {
+    while (_activeSegmentIndex > 0 &&
+        currentProgress < _segments[_activeSegmentIndex].startDistance - 0.3) {
+      _activeSegmentIndex--;
+      final rolledTurnIdx = _activeSegmentIndex;
+      _completedTurnIndices.remove(rolledTurnIdx);
+      _turnOffsets.remove(rolledTurnIdx);
+    }
+  }
+
+  /// True remaining distance to destination, accounting for any extra distance
+  /// from making early or late turns.
+  double getRemainingDistance(double currentProgress) {
+    final baseRemaining = (_totalDistance - currentProgress).clamp(0.0, double.infinity);
+    return baseRemaining + extraTurnPenaltyDistance;
   }
 
   void reset() {
     _activeSegmentIndex = 0;
     _completedTurnIndices.clear();
+    _turnOffsets.clear();
   }
 
   RouteSegmentManager({required this.route}) {
@@ -309,7 +343,11 @@ class RouteSegmentManager {
     final clamped = dist.clamp(0.0, _totalDistance);
 
     for (var i = 0; i < route.length - 1; i++) {
-      if (clamped >= _cumulativeDistances[i] && clamped <= _cumulativeDistances[i + 1]) {
+      final isLast = (i == route.length - 2);
+      final inSegment = isLast
+          ? (clamped >= _cumulativeDistances[i] && clamped <= _cumulativeDistances[i + 1])
+          : (clamped >= _cumulativeDistances[i] && clamped < _cumulativeDistances[i + 1]);
+      if (inSegment) {
         final span = _cumulativeDistances[i + 1] - _cumulativeDistances[i];
         final u = span > 0.0001 ? (clamped - _cumulativeDistances[i]) / span : 0.0;
         final a = route[i];
@@ -419,6 +457,7 @@ class RouteSegmentManager {
   /// - Facing away from both is treated as off-path / wrong turn.
   ({
     bool isFacingPath,
+    bool isTravelingBackward,
     double deltaDegrees,
     String turnDirection, // 'left', 'right', or 'straight'
   }) evaluateFacingWithTolerance({
@@ -436,9 +475,10 @@ class RouteSegmentManager {
       // 1. Check if user turned towards outgoing corridor (valid early/on-time/late turn!)
       final deltaOut = computeHeadingDelta(userHeadingDeg, upcomingTurn.outgoingHeadingDeg);
       if (deltaOut.abs() <= thresholdDeg + 10.0) {
-        registerTurnCompleted(upcomingTurn);
+        registerTurnCompleted(upcomingTurn, currentProgress: s);
         return (
           isFacingPath: true,
+          isTravelingBackward: false,
           deltaDegrees: deltaOut,
           turnDirection: 'straight',
         );
@@ -449,6 +489,7 @@ class RouteSegmentManager {
       if (deltaIn.abs() <= thresholdDeg + 10.0) {
         return (
           isFacingPath: true,
+          isTravelingBackward: false,
           deltaDegrees: deltaIn,
           turnDirection: 'straight',
         );
@@ -456,8 +497,10 @@ class RouteSegmentManager {
 
       // 3. User is facing neither incoming nor outgoing corridor in the turn zone
       final turnDir = upcomingTurn.angleDeltaDeg > 0 ? 'right' : 'left';
+      final isBackward = (deltaOut.abs() - 180.0).abs() <= 45.0 || (deltaIn.abs() - 180.0).abs() <= 45.0;
       return (
         isFacingPath: false,
+        isTravelingBackward: isBackward,
         deltaDegrees: deltaOut,
         turnDirection: turnDir,
       );
@@ -467,12 +510,14 @@ class RouteSegmentManager {
     final target = targetBearingDeg ?? sampleTargetBearing(s, userHeadingDeg: userHeadingDeg);
     final delta = computeHeadingDelta(userHeadingDeg, target);
     final isFacing = delta.abs() <= thresholdDeg;
+    final isBackward = (delta.abs() - 180.0).abs() <= 45.0;
     final turnDir = isFacing
         ? 'straight'
         : (delta > 0 ? 'right' : 'left');
 
     return (
       isFacingPath: isFacing,
+      isTravelingBackward: isBackward,
       deltaDegrees: delta,
       turnDirection: turnDir,
     );
@@ -491,6 +536,7 @@ class RouteSegmentManager {
   /// Evaluates whether the user's device is facing toward the intended path.
   static ({
     bool isFacingPath,
+    bool isTravelingBackward,
     double deltaDegrees,
     String turnDirection, // 'left', 'right', or 'straight'
   }) evaluateFacing({
@@ -500,12 +546,14 @@ class RouteSegmentManager {
   }) {
     final delta = computeHeadingDelta(userHeadingDeg, targetBearingDeg);
     final isFacing = delta.abs() <= thresholdDeg;
+    final isBackward = (delta.abs() - 180.0).abs() <= 45.0;
     final turnDir = isFacing
         ? 'straight'
         : (delta > 0 ? 'right' : 'left');
 
     return (
       isFacingPath: isFacing,
+      isTravelingBackward: isBackward,
       deltaDegrees: delta,
       turnDirection: turnDir,
     );

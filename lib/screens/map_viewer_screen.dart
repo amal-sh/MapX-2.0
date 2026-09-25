@@ -86,6 +86,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
   // Off-path heading detection
   bool _isFacingPath = true;
+  bool _isTravelingBackward = false;
+  double _extraTurnDistance = 0.0;
   double _offPathAngleDelta = 0.0;
   String _turnDirection = 'straight';
   bool _isAtTurn = false;
@@ -453,6 +455,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
         _isDrifting = pos.isDrifting;
         _driftReason = pos.driftReason;
         _isFacingPath = facingEval.isFacingPath;
+        _isTravelingBackward = pos.isTravelingBackward || facingEval.isTravelingBackward;
+        _extraTurnDistance = pos.extraTurnDistance;
         _offPathAngleDelta = facingEval.deltaDegrees;
         _turnDirection = facingEval.turnDirection;
         _isAtTurn = isAtTurn;
@@ -594,6 +598,14 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     }
 
     if (_atConnector) return _connectorGuidance;
+
+    if (_isTravelingBackward) {
+      return (
+        title: 'Wrong Direction',
+        subtitle: 'Turn around to follow the route',
+        icon: CupertinoIcons.arrow_uturn_down,
+      );
+    }
 
     if (!_isFacingPath) {
       return (
@@ -923,14 +935,15 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                 ),
               ),
 
-            // Off-Path Direction Prompt: guides user when facing away from path
-            if (_arReady && !_isFacingPath)
+            // Off-Path Direction Prompt: guides user when facing away from path or traveling backward
+            if (_arReady && (!_isFacingPath || _isTravelingBackward))
               Positioned.fill(
                 child: IgnorePointer(
                   child: OffPathDirectionPrompt(
                     deltaDegrees: _offPathAngleDelta,
                     turnDirection: _turnDirection,
                     isAtTurn: _isAtTurn,
+                    isTravelingBackward: _isTravelingBackward,
                   ),
                 ),
               ),
@@ -1050,8 +1063,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                 right: 16,
                 bottom: MediaQuery.of(context).padding.bottom + 24,
                 child: _DistanceBar(
-                  remainingMeters: (_routeTotalDistance - _liveProgress).clamp(0.0, double.infinity),
-                  totalMeters: _routeTotalDistance,
+                  remainingMeters: (_routeTotalDistance - _liveProgress + _extraTurnDistance).clamp(0.0, double.infinity),
+                  totalMeters: _routeTotalDistance + _extraTurnDistance,
                 ),
               ),
             ],
