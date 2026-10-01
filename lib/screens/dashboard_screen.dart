@@ -4,44 +4,48 @@ import 'dart:convert';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../providers/dashboard_providers.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';
 import 'mapping_screen.dart';
 import 'map_viewer_screen.dart';
 import 'search_screen.dart';
 
-/// One saved floor map. A "building" is just every entry sharing a name.
-class _MapEntry {
-  final String key;
-  final String name;
-  // Null for maps saved before floors were asked for.
-  final int? floor;
-  const _MapEntry({required this.key, required this.name, required this.floor});
-
-  String get title => floor == null ? name : '$name · Floor $floor';
-}
-
-class DashboardScreen extends StatefulWidget {
+class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  Widget build(BuildContext context) {
+    // If an ancestor ProviderScope exists, use child directly.
+    // If not (e.g. isolated test without ProviderScope), wrap with ProviderScope.
+    Widget content = const _DashboardScreenContent();
+    try {
+      ProviderScope.containerOf(context, listen: false);
+    } catch (_) {
+      content = ProviderScope(child: content);
+    }
+    return content;
+  }
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenContent extends ConsumerStatefulWidget {
+  const _DashboardScreenContent();
+
+  @override
+  ConsumerState<_DashboardScreenContent> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   static const _methodChannel = MethodChannel('mapx/arcore');
 
-  List<_MapEntry> _entries = [];
-  Map<String, BuildingLocation> _buildingLocations = {};
-  bool _isLoading = true;
   bool _isDeviceSupported = true;
 
   @override
   void initState() {
     super.initState();
     _requestInitialLocationPermission();
-    _loadMaps();
     _checkArCoreSupport();
   }
 
@@ -50,7 +54,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (granted && mounted) {
       final loc = await LocationService.instance.getCurrentLocation();
       if (loc != null && mounted) {
-        _loadMaps();
+        ref.read(dashboardProvider.notifier).loadMaps();
       }
     }
   }
@@ -60,8 +64,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final availability =
           await _methodChannel.invokeMethod<String>('checkAvailability');
       // ARCore is only operational and supported if availability is SUPPORTED_INSTALLED.
-      // Emulators or devices without ARCore installed (SUPPORTED_NOT_INSTALLED,
-      // UNSUPPORTED_DEVICE_NOT_CAPABLE, or errors) are not supported to run MapX AR.
       if (availability != 'SUPPORTED_INSTALLED') {
         if (!mounted) return;
         setState(() => _isDeviceSupported = false);
@@ -146,73 +148,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _loadMaps() async {
-    // Quietly sync any new maps from Firestore in background
-    try {
-      await FirestoreService.instance.syncFromFirestore();
-    } catch (_) {}
-
-    final prefs = await SharedPreferences.getInstance();
-    final entries = <_MapEntry>[];
-    final locations = <String, BuildingLocation>{};
-
-    for (final key in prefs.getKeys().where((k) => k.startsWith('map_'))) {
-      final data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
-      final name = data['name'] as String? ?? key.substring(4);
-      final floor = data['floor'] as int?;
-
-      entries.add(_MapEntry(
-        key: key,
-        name: name,
-        floor: floor,
-      ));
-
-      if (data['latitude'] != null && data['longitude'] != null && !locations.containsKey(name)) {
-        locations[name] = BuildingLocation(
-          latitude: (data['latitude'] as num).toDouble(),
-          longitude: (data['longitude'] as num).toDouble(),
-          accuracy: (data['accuracy'] ?? data['gpsAccuracy'] as num?)?.toDouble() ?? 0.0,
-          timestamp: DateTime.tryParse(data['timestamp'] as String? ?? '') ?? DateTime.now(),
-        );
-      }
-    }
-
-    // Also check building_gps_ cache
-    for (final key in prefs.getKeys().where((k) => k.startsWith('building_gps_'))) {
-      final bName = key.substring('building_gps_'.length);
-      if (!locations.containsKey(bName)) {
-        try {
-          final locData = jsonDecode(prefs.getString(key)!) as Map<String, dynamic>;
-          locations[bName] = BuildingLocation.fromJson(locData);
-        } catch (_) {}
-      }
-    }
-
-    setState(() {
-      _entries = entries;
-      _buildingLocations = locations;
-      _isLoading = false;
-    });
-  }
-
-  Future<void> _deleteMap(String key) async {
-    final entry = _entries.cast<_MapEntry?>().firstWhere((e) => e?.key == key, orElse: () => null);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(key);
-
-    if (entry != null) {
-      unawaited(FirestoreService.instance.deleteMap(
-        mapKey: key,
-        buildingName: entry.name,
-        floor: entry.floor ?? 0,
-      ));
-    }
-    _loadMaps();
-  }
-
-  bool _exists(String name, int floor) =>
-      _entries.any((e) => e.name == name && e.floor == floor);
-
   Future<void> _startNewMap() async {
     if (!_isDeviceSupported) {
       _showUnsupportedDeviceDialog();
@@ -220,7 +155,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     final details = await showDialog<({String name, int floor})>(
       context: context,
-      builder: (_) => _NewMapDialog(exists: _exists),
+      builder: (_) => _NewMapDialog(
+        exists: ref.read(dashboardProvider.notifier).exists,
+      ),
     );
     if (details == null || !mounted) return;
 
@@ -264,11 +201,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     final details = await showDialog<({String name, int floor})>(
       context: context,
-      builder: (_) => _AddFloorDialog(building: building, exists: _exists),
+      builder: (_) => _AddFloorDialog(
+        building: building,
+        exists: ref.read(dashboardProvider.notifier).exists,
+      ),
     );
     if (details == null || !mounted) return;
 
-    BuildingLocation? location = _buildingLocations[building];
+    final dashboardState = ref.read(dashboardProvider);
+    BuildingLocation? location = dashboardState.buildingLocations[building];
     location ??= await LocationService.instance.getCurrentLocation();
 
     await _openMapping(details, location: location);
@@ -288,12 +229,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     if (saved == true) {
-      _loadMaps();
+      ref.read(dashboardProvider.notifier).loadMaps();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final dashboardState = ref.watch(dashboardProvider);
+
     return Scaffold(
       appBar: AppBar(
         title: Image.asset(
@@ -315,11 +258,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ],
       ),
-      body: _isLoading
+      body: dashboardState.isLoading
           ? const Center(child: CircularProgressIndicator(color: Colors.black))
-          : _entries.isEmpty
+          : dashboardState.entries.isEmpty
               ? _buildEmptyState()
-              : _buildMapList(),
+              : _buildMapList(dashboardState),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _startNewMap,
         icon: const Icon(CupertinoIcons.add),
@@ -335,8 +278,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           Container(
             padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF4F4F5),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF4F4F5),
               shape: BoxShape.circle,
             ),
             child: const Icon(CupertinoIcons.map, size: 64, color: Color(0xFF71717A)),
@@ -356,27 +299,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildMapList() {
-    final byBuilding = <String, List<_MapEntry>>{};
-    for (final e in _entries) {
-      byBuilding.putIfAbsent(e.name, () => []).add(e);
-    }
-    for (final floors in byBuilding.values) {
-      // Ascending by floor; maps with no floor recorded go last.
-      floors.sort((a, b) => (a.floor ?? 1 << 30).compareTo(b.floor ?? 1 << 30));
-    }
-    final buildings = byBuilding.entries.toList();
+  Widget _buildMapList(DashboardState dashboardState) {
+    final buildings = dashboardState.groupedByBuilding.entries.toList();
 
     return ListView.builder(
       // Bottom padding clears the floating New Map button.
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
       itemCount: buildings.length,
-      itemBuilder: (context, index) =>
-          _buildBuildingCard(buildings[index].key, buildings[index].value),
+      itemBuilder: (context, index) => _buildBuildingCard(
+        buildings[index].key,
+        buildings[index].value,
+        dashboardState.buildingLocations,
+      ),
     );
   }
 
-  Widget _buildBuildingCard(String name, List<_MapEntry> floors) {
+  Widget _buildBuildingCard(
+    String name,
+    List<BuildingMapEntry> floors,
+    Map<String, BuildingLocation> locations,
+  ) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
@@ -405,7 +347,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   floors.length == 1 ? '1 floor' : '${floors.length} floors',
                   style: const TextStyle(color: Color(0xFF71717A), fontSize: 13),
                 ),
-                if (_buildingLocations.containsKey(name))
+                if (locations.containsKey(name))
                   Padding(
                     padding: const EdgeInsets.only(top: 3),
                     child: Row(
@@ -414,7 +356,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const Icon(CupertinoIcons.location_solid, size: 12, color: Color(0xFF16A34A)),
                         const SizedBox(width: 4),
                         Text(
-                          '${_buildingLocations[name]!.latitude.toStringAsFixed(5)}, ${_buildingLocations[name]!.longitude.toStringAsFixed(5)}',
+                          '${locations[name]!.latitude.toStringAsFixed(5)}, ${locations[name]!.longitude.toStringAsFixed(5)}',
                           style: const TextStyle(
                             color: Color(0xFF52525B),
                             fontSize: 11,
@@ -467,7 +409,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  void _confirmDelete(_MapEntry entry) {
+  void _confirmDelete(BuildingMapEntry entry) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -481,7 +423,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              _deleteMap(entry.key);
+              ref.read(dashboardProvider.notifier).deleteMap(entry.key);
             },
             child: const Text('Delete', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
           ),

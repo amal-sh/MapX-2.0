@@ -1,11 +1,13 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/search_models.dart';
+import '../providers/search_providers.dart';
 import '../services/search_service.dart';
 import 'map_viewer_screen.dart';
 
-class SearchScreen extends StatefulWidget {
+class SearchScreen extends ConsumerStatefulWidget {
   final String? initialQuery;
   final String? preselectedBuilding;
 
@@ -16,27 +18,27 @@ class SearchScreen extends StatefulWidget {
   });
 
   @override
-  State<SearchScreen> createState() => _SearchScreenState();
+  ConsumerState<SearchScreen> createState() => _SearchScreenState();
 }
 
-class _SearchScreenState extends State<SearchScreen> {
-  final TextEditingController _searchController = TextEditingController();
+class _SearchScreenState extends ConsumerState<SearchScreen> {
+  late final TextEditingController _searchController;
   final FocusNode _searchFocusNode = FocusNode();
-
-  bool _isLoading = true;
-  SearchLocationContext? _context;
-  SearchResults _results = const SearchResults(waypoints: [], buildings: []);
-
-  String? _focusedBuilding;
-  String _selectedCategory = 'all'; // 'all', 'places', 'buildings', 'connectors'
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialQuery != null) {
-      _searchController.text = widget.initialQuery!;
-    }
-    _initSearch();
+    _searchController = TextEditingController(text: widget.initialQuery ?? '');
+
+    // Set initial filters on next microtask after provider tree is ready
+    Future.microtask(() {
+      if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {
+        ref.read(searchQueryProvider.notifier).state = widget.initialQuery!;
+      }
+      if (widget.preselectedBuilding != null) {
+        ref.read(searchFocusedBuildingProvider.notifier).state = widget.preselectedBuilding;
+      }
+    });
   }
 
   @override
@@ -46,50 +48,17 @@ class _SearchScreenState extends State<SearchScreen> {
     super.dispose();
   }
 
-  Future<void> _initSearch() async {
-    final ctx = await SearchService.instance.loadSearchContext();
-    if (!mounted) return;
-
-    setState(() {
-      _context = ctx;
-      _focusedBuilding = widget.preselectedBuilding ?? ctx.currentBuilding?.name;
-      _isLoading = false;
-    });
-
-    _executeSearch();
-  }
-
-  void _executeSearch() {
-    if (_context == null) return;
-
-    final results = SearchService.instance.search(
-      query: _searchController.text,
-      context: _context!,
-      focusBuildingName: _focusedBuilding,
-      categoryFilter: _selectedCategory,
-    );
-
-    setState(() {
-      _results = results;
-    });
+  void _onQueryChanged(String query) {
+    ref.read(searchQueryProvider.notifier).state = query;
   }
 
   void _toggleBuildingFocus(String? buildingName) {
-    setState(() {
-      if (_focusedBuilding == buildingName) {
-        _focusedBuilding = null; // Toggle off to search globally
-      } else {
-        _focusedBuilding = buildingName;
-      }
-    });
-    _executeSearch();
+    final current = ref.read(searchFocusedBuildingProvider);
+    ref.read(searchFocusedBuildingProvider.notifier).state = (current == buildingName) ? null : buildingName;
   }
 
   void _setCategory(String category) {
-    setState(() {
-      _selectedCategory = category;
-    });
-    _executeSearch();
+    ref.read(searchCategoryFilterProvider.notifier).state = category;
   }
 
   void _openWaypoint(SearchWaypointInfo waypoint) {
@@ -121,6 +90,11 @@ class _SearchScreenState extends State<SearchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final contextAsync = ref.watch(searchContextProvider);
+    final results = ref.watch(searchResultsProvider);
+    final focusedBuilding = ref.watch(searchFocusedBuildingProvider);
+    final selectedCategory = ref.watch(searchCategoryFilterProvider);
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -128,7 +102,7 @@ class _SearchScreenState extends State<SearchScreen> {
         elevation: 0,
         scrolledUnderElevation: 0,
         leading: IconButton(
-          icon: const Icon(CupertinoIcons.arrow_left, color: Colors.black),
+          icon: const Icon(CupertinoIcons.back, color: Colors.black),
           onPressed: () => Navigator.pop(context),
         ),
         titleSpacing: 0,
@@ -145,12 +119,12 @@ class _SearchScreenState extends State<SearchScreen> {
             focusNode: _searchFocusNode,
             autofocus: true,
             textInputAction: TextInputAction.search,
-            onChanged: (_) => _executeSearch(),
+            onChanged: _onQueryChanged,
             style: const TextStyle(fontSize: 15, color: Colors.black),
             decoration: InputDecoration(
               prefixIcon: const Icon(CupertinoIcons.search, size: 18, color: Color(0xFF71717A)),
-              hintText: _focusedBuilding != null
-                  ? 'Search in $_focusedBuilding...'
+              hintText: focusedBuilding != null
+                  ? 'Search in $focusedBuilding...'
                   : 'Search rooms, places, buildings...',
               hintStyle: const TextStyle(color: Color(0xFF71717A), fontSize: 14),
               border: InputBorder.none,
@@ -160,7 +134,7 @@ class _SearchScreenState extends State<SearchScreen> {
                       icon: const Icon(CupertinoIcons.clear_circled_solid, size: 16, color: Color(0xFF71717A)),
                       onPressed: () {
                         _searchController.clear();
-                        _executeSearch();
+                        _onQueryChanged('');
                       },
                     )
                   : null,
@@ -168,25 +142,27 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
         ),
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.black))
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildLocationContextBar(),
-                _buildCategoryFilters(),
-                const Divider(height: 1, color: Color(0xFFE4E4E7)),
-                Expanded(child: _buildResultsList()),
-              ],
-            ),
+      body: contextAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator(color: Colors.black)),
+        error: (err, stack) => Center(
+          child: Text('Unable to load places: $err', style: const TextStyle(color: Color(0xFF71717A))),
+        ),
+        data: (ctx) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildLocationContextBar(ctx, focusedBuilding),
+            _buildCategoryFilters(selectedCategory),
+            const Divider(height: 1, color: Color(0xFFE4E4E7)),
+            Expanded(child: _buildResultsList(results, focusedBuilding)),
+          ],
+        ),
+      ),
     );
   }
 
-  Widget _buildLocationContextBar() {
-    if (_context == null) return const SizedBox.shrink();
-
-    final isInBuilding = _context!.isInBuilding;
-    final currentB = _context!.currentBuilding;
+  Widget _buildLocationContextBar(SearchLocationContext context, String? focusedBuilding) {
+    final isInBuilding = context.isInBuilding;
+    final currentB = context.currentBuilding;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
@@ -206,8 +182,8 @@ class _SearchScreenState extends State<SearchScreen> {
                 child: Text(
                   isInBuilding
                       ? 'You are at ${currentB!.name}'
-                      : _context!.nearbyBuildings.isNotEmpty
-                          ? 'Nearby: ${_context!.nearbyBuildings.first.name} (${_context!.nearbyBuildings.first.distanceFormatted})'
+                      : context.nearbyBuildings.isNotEmpty
+                          ? 'Nearby: ${context.nearbyBuildings.first.name} (${context.nearbyBuildings.first.distanceFormatted})'
                           : 'GPS ready · Searching all maps',
                   style: const TextStyle(
                     fontSize: 12,
@@ -218,7 +194,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              if (_focusedBuilding != null)
+              if (focusedBuilding != null)
                 GestureDetector(
                   onTap: () => _toggleBuildingFocus(null),
                   child: Container(
@@ -242,14 +218,14 @@ class _SearchScreenState extends State<SearchScreen> {
                 ),
             ],
           ),
-          if (!isInBuilding && _context!.nearbyBuildings.isNotEmpty) ...[
+          if (!isInBuilding && context.nearbyBuildings.isNotEmpty) ...[
             const SizedBox(height: 8),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
                   const Text('Focus on: ', style: TextStyle(fontSize: 11, color: Color(0xFF71717A))),
-                  for (final b in _context!.nearbyBuildings.take(3)) ...[
+                  for (final b in context.nearbyBuildings.take(3)) ...[
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: FilterChip(
@@ -257,10 +233,10 @@ class _SearchScreenState extends State<SearchScreen> {
                           '${b.name} (${b.distanceFormatted})',
                           style: TextStyle(
                             fontSize: 11,
-                            color: _focusedBuilding == b.name ? Colors.white : Colors.black,
+                            color: focusedBuilding == b.name ? Colors.white : Colors.black,
                           ),
                         ),
-                        selected: _focusedBuilding == b.name,
+                        selected: focusedBuilding == b.name,
                         selectedColor: Colors.black,
                         backgroundColor: Colors.white,
                         side: const BorderSide(color: Color(0xFFE4E4E7)),
@@ -281,7 +257,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildCategoryFilters() {
+  Widget _buildCategoryFilters(String selectedCategory) {
     final categories = [
       ('all', 'All', CupertinoIcons.square_grid_2x2),
       ('places', 'Rooms & Places', CupertinoIcons.placemark),
@@ -294,7 +270,7 @@ class _SearchScreenState extends State<SearchScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: categories.map((cat) {
-          final isSelected = _selectedCategory == cat.$1;
+          final isSelected = selectedCategory == cat.$1;
           return Padding(
             padding: const EdgeInsets.only(right: 8),
             child: ChoiceChip(
@@ -326,8 +302,8 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildResultsList() {
-    if (_results.isEmpty) {
+  Widget _buildResultsList(SearchResults results, String? focusedBuilding) {
+    if (results.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -349,13 +325,13 @@ class _SearchScreenState extends State<SearchScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                _focusedBuilding != null
-                    ? 'No results in "$_focusedBuilding". Tap "Show All" above to search across all buildings.'
+                focusedBuilding != null
+                    ? 'No results in "$focusedBuilding". Tap "Show All" above to search across all buildings.'
                     : 'Try checking your spelling or searching for a room, stairs, or building name.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 13, color: Color(0xFF71717A), height: 1.4),
               ),
-              if (_focusedBuilding != null) ...[
+              if (focusedBuilding != null) ...[
                 const SizedBox(height: 16),
                 OutlinedButton(
                   onPressed: () => _toggleBuildingFocus(null),
@@ -376,13 +352,13 @@ class _SearchScreenState extends State<SearchScreen> {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 8),
       children: [
-        if (_results.waypoints.isNotEmpty) ...[
-          _buildSectionHeader('Places & Rooms (${_results.waypoints.length})'),
-          for (final wp in _results.waypoints) _buildWaypointTile(wp),
+        if (results.waypoints.isNotEmpty) ...[
+          _buildSectionHeader('Places & Rooms (${results.waypoints.length})'),
+          for (final wp in results.waypoints) _buildWaypointTile(wp),
         ],
-        if (_results.buildings.isNotEmpty) ...[
-          _buildSectionHeader('Buildings (${_results.buildings.length})'),
-          for (final b in _results.buildings) _buildBuildingTile(b),
+        if (results.buildings.isNotEmpty) ...[
+          _buildSectionHeader('Buildings (${results.buildings.length})'),
+          for (final b in results.buildings) _buildBuildingTile(b),
         ],
       ],
     );
