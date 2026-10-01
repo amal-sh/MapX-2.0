@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -7,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../logic/floor_graph.dart';
 import '../models/floor_map_data.dart';
 import '../models/map_models.dart';
+import '../services/firestore_service.dart';
 import '../widgets/marker_dialog.dart';
 import '../widgets/path_map_painter.dart';
 import 'mapping_screen.dart';
@@ -84,7 +86,16 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(widget.mapKey, jsonEncode(_map!.toJsonWith(waypoints: _waypoints, links: _links)));
+    final updatedData = _map!.toJsonWith(waypoints: _waypoints, links: _links);
+    await prefs.setString(widget.mapKey, jsonEncode(updatedData));
+
+    unawaited(FirestoreService.instance.saveMap(
+      mapKey: widget.mapKey,
+      buildingName: _map!.building ?? widget.mapKey.substring(4),
+      floor: _map!.floor,
+      mapData: updatedData,
+    ));
+
     if (!mounted) return;
     Navigator.pop(context, true);
   }

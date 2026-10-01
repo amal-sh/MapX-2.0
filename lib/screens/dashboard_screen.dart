@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/firestore_service.dart';
+import '../services/location_service.dart';
 import 'mapping_screen.dart';
 import 'map_viewer_screen.dart';
 
@@ -29,7 +32,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   static const _methodChannel = MethodChannel('mapx/arcore');
 
   List<_MapEntry> _entries = [];
+  Map<String, BuildingLocation> _buildingLocations = {};
   bool _isLoading = true;
+  bool _isSyncing = false;
   bool _isDeviceSupported = true;
 
   @override
@@ -130,27 +135,75 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _loadMaps() async {
+  Future<void> _loadMaps({bool syncCloud = false}) async {
+    if (syncCloud) {
+      setState(() => _isSyncing = true);
+      try {
+        final count = await FirestoreService.instance.syncFromFirestore();
+        if (mounted && count > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Synced $count map(s) from Firestore!')),
+          );
+        }
+      } catch (_) {}
+      if (mounted) setState(() => _isSyncing = false);
+    }
+
     final prefs = await SharedPreferences.getInstance();
     final entries = <_MapEntry>[];
+    final locations = <String, BuildingLocation>{};
+
     for (final key in prefs.getKeys().where((k) => k.startsWith('map_'))) {
       final data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
+      final name = data['name'] as String? ?? key.substring(4);
+      final floor = data['floor'] as int?;
+
       entries.add(_MapEntry(
         key: key,
-        // Maps saved before floors existed have no stored name: it was the key.
-        name: data['name'] as String? ?? key.substring(4),
-        floor: data['floor'] as int?,
+        name: name,
+        floor: floor,
       ));
+
+      if (data['latitude'] != null && data['longitude'] != null && !locations.containsKey(name)) {
+        locations[name] = BuildingLocation(
+          latitude: (data['latitude'] as num).toDouble(),
+          longitude: (data['longitude'] as num).toDouble(),
+          accuracy: (data['accuracy'] ?? data['gpsAccuracy'] as num?)?.toDouble() ?? 0.0,
+          timestamp: DateTime.tryParse(data['timestamp'] as String? ?? '') ?? DateTime.now(),
+        );
+      }
     }
+
+    // Also check building_gps_ cache
+    for (final key in prefs.getKeys().where((k) => k.startsWith('building_gps_'))) {
+      final bName = key.substring('building_gps_'.length);
+      if (!locations.containsKey(bName)) {
+        try {
+          final locData = jsonDecode(prefs.getString(key)!) as Map<String, dynamic>;
+          locations[bName] = BuildingLocation.fromJson(locData);
+        } catch (_) {}
+      }
+    }
+
     setState(() {
       _entries = entries;
+      _buildingLocations = locations;
       _isLoading = false;
     });
   }
 
   Future<void> _deleteMap(String key) async {
+    final entry = _entries.cast<_MapEntry?>().firstWhere((e) => e?.key == key, orElse: () => null);
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(key);
+
+    if (entry != null) {
+      unawaited(FirestoreService.instance.deleteMap(
+        mapKey: key,
+        buildingName: entry.name,
+        floor: entry.floor ?? 0,
+      ));
+    }
     _loadMaps();
   }
 
@@ -166,7 +219,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
       context: context,
       builder: (_) => _NewMapDialog(exists: _exists),
     );
-    await _openMapping(details);
+    if (details == null || !mounted) return;
+
+    // Show immediate feedback while acquiring GPS
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Acquiring building GPS coordinates...'),
+          ],
+        ),
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    final location = await LocationService.instance.getCurrentLocation();
+    if (location != null) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('building_gps_${details.name}', jsonEncode(location.toJson()));
+
+      unawaited(FirestoreService.instance.saveBuilding(
+        buildingName: details.name,
+        location: location,
+        initialFloor: details.floor,
+      ));
+    }
+
+    await _openMapping(details, location: location);
   }
 
   Future<void> _addFloor(String building) async {
@@ -178,16 +263,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
       context: context,
       builder: (_) => _AddFloorDialog(building: building, exists: _exists),
     );
-    await _openMapping(details);
+    if (details == null || !mounted) return;
+
+    BuildingLocation? location = _buildingLocations[building];
+    location ??= await LocationService.instance.getCurrentLocation();
+
+    await _openMapping(details, location: location);
   }
 
-  Future<void> _openMapping(({String name, int floor})? details) async {
+  Future<void> _openMapping(({String name, int floor})? details, {BuildingLocation? location}) async {
     if (details == null || !mounted) return;
 
     final saved = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
-        builder: (_) => MappingScreen(mapName: details.name, floor: details.floor),
+        builder: (_) => MappingScreen(
+          mapName: details.name,
+          floor: details.floor,
+          location: location,
+        ),
       ),
     );
     if (saved == true) {
@@ -204,8 +298,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
           height: 52,
           fit: BoxFit.contain,
         ),
-          
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: _isSyncing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                  )
+                : const Icon(CupertinoIcons.cloud_download, color: Colors.black),
+            tooltip: 'Sync from Firestore',
+            onPressed: _isSyncing ? null : () => _loadMaps(syncCloud: true),
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Colors.black))
@@ -290,9 +396,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: const Icon(CupertinoIcons.building_2_fill, color: Colors.white, size: 22),
             ),
             title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17, color: Colors.black)),
-            subtitle: Text(
-              floors.length == 1 ? '1 floor' : '${floors.length} floors',
-              style: const TextStyle(color: Color(0xFF71717A), fontSize: 13),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  floors.length == 1 ? '1 floor' : '${floors.length} floors',
+                  style: const TextStyle(color: Color(0xFF71717A), fontSize: 13),
+                ),
+                if (_buildingLocations.containsKey(name))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(CupertinoIcons.location_solid, size: 12, color: Color(0xFF16A34A)),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${_buildingLocations[name]!.latitude.toStringAsFixed(5)}, ${_buildingLocations[name]!.longitude.toStringAsFixed(5)}',
+                          style: const TextStyle(
+                            color: Color(0xFF52525B),
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ),
           ),
           const Divider(height: 1),

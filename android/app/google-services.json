@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "574241783418",
+    "project_id": "mapx-007",
+    "storage_bucket": "mapx-007.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:574241783418:android:46f120e288e13c232185c3",
+        "android_client_info": {
+          "package_name": "com.example.mapx2"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwXXOVlhzYF1OkezTr3eomYDLeR6fPpIw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -10,6 +10,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../logic/coordinate_transform.dart';
 import '../logic/floor_graph.dart';
 import '../models/map_models.dart';
+import '../services/firestore_service.dart';
+import '../services/location_service.dart';
 import '../widgets/marker_dialog.dart';
 import '../widgets/path_map_painter.dart';
 
@@ -39,8 +41,15 @@ class MappingScreen extends StatefulWidget {
   final String mapName;
   final int floor;
   final MappingBranch? branch;
+  final BuildingLocation? location;
 
-  const MappingScreen({super.key, required this.mapName, required this.floor, this.branch});
+  const MappingScreen({
+    super.key,
+    required this.mapName,
+    required this.floor,
+    this.branch,
+    this.location,
+  });
 
   @override
   State<MappingScreen> createState() => _MappingScreenState();
@@ -583,13 +592,24 @@ class _MappingScreenState extends State<MappingScreen> {
       'stepCount': _stepCount,
       'name': widget.mapName,
       'floor': widget.floor,
+      if (widget.location != null) ...widget.location!.toJson(),
     };
 
-    await prefs.setString('map_${widget.mapName}#${widget.floor}', jsonEncode(mapData));
+    final mapKey = 'map_${widget.mapName}#${widget.floor}';
+    await prefs.setString(mapKey, jsonEncode(mapData));
+
+    // Push map and building to Firestore
+    unawaited(FirestoreService.instance.saveMap(
+      mapKey: mapKey,
+      buildingName: widget.mapName,
+      floor: widget.floor,
+      mapData: mapData,
+      location: widget.location,
+    ));
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Map "${widget.mapName}" saved successfully with ${_computedNodes.length} nodes!')),
+      SnackBar(content: Text('Map "${widget.mapName}" saved locally & synced to Firestore!')),
     );
 
     Navigator.pop(context, true);
