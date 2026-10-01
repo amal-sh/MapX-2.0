@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'mapping_screen.dart';
 import 'map_viewer_screen.dart';
@@ -25,13 +26,108 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  static const _methodChannel = MethodChannel('mapx/arcore');
+
   List<_MapEntry> _entries = [];
   bool _isLoading = true;
+  bool _isDeviceSupported = true;
 
   @override
   void initState() {
     super.initState();
     _loadMaps();
+    _checkArCoreSupport();
+  }
+
+  Future<void> _checkArCoreSupport() async {
+    try {
+      final availability =
+          await _methodChannel.invokeMethod<String>('checkAvailability');
+      // ARCore is only operational and supported if availability is SUPPORTED_INSTALLED.
+      // Emulators or devices without ARCore installed (SUPPORTED_NOT_INSTALLED,
+      // UNSUPPORTED_DEVICE_NOT_CAPABLE, or errors) are not supported to run MapX AR.
+      if (availability != 'SUPPORTED_INSTALLED') {
+        if (!mounted) return;
+        setState(() => _isDeviceSupported = false);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _showUnsupportedDeviceDialog();
+          }
+        });
+      }
+    } on MissingPluginException {
+      // In testing environments or platforms without the plugin registered,
+      // do not block unless mocked.
+    } on PlatformException {
+      if (!mounted) return;
+      setState(() => _isDeviceSupported = false);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showUnsupportedDeviceDialog();
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isDeviceSupported = false);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showUnsupportedDeviceDialog();
+        }
+      });
+    }
+  }
+
+  void _showUnsupportedDeviceDialog() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: const [
+              Icon(CupertinoIcons.exclamationmark_triangle_fill,
+                  color: Color(0xFFDC2626), size: 24),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Device Not Supported',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 18,
+                    color: Colors.black,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: const Text(
+            'This device isn\'t supported. MapX requires ARCore support to function properly.',
+            style: TextStyle(
+              fontSize: 14,
+              color: Color(0xFF52525B),
+              height: 1.4,
+            ),
+          ),
+          actions: [
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.black,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onPressed: () => SystemNavigator.pop(),
+              child: const Text('Exit App', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadMaps() async {
@@ -62,6 +158,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _entries.any((e) => e.name == name && e.floor == floor);
 
   Future<void> _startNewMap() async {
+    if (!_isDeviceSupported) {
+      _showUnsupportedDeviceDialog();
+      return;
+    }
     final details = await showDialog<({String name, int floor})>(
       context: context,
       builder: (_) => _NewMapDialog(exists: _exists),
@@ -70,6 +170,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _addFloor(String building) async {
+    if (!_isDeviceSupported) {
+      _showUnsupportedDeviceDialog();
+      return;
+    }
     final details = await showDialog<({String name, int floor})>(
       context: context,
       builder: (_) => _AddFloorDialog(building: building, exists: _exists),

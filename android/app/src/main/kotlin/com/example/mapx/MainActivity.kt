@@ -199,10 +199,10 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             })
     }
 
-    private fun checkArCoreAvailability(result: MethodChannel.Result) {
+    private fun checkArCoreAvailability(result: MethodChannel.Result, retryCount: Int = 0) {
         val availability = ArCoreApk.getInstance().checkAvailability(this)
-        if (availability.isTransient) {
-            mainHandler.postDelayed({ checkArCoreAvailability(result) }, 200)
+        if (availability.isTransient && retryCount < 5) {
+            mainHandler.postDelayed({ checkArCoreAvailability(result, retryCount + 1) }, 200)
         } else {
             result.success(availability.name)
         }
