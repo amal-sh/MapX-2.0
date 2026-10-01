@@ -26,8 +26,16 @@ import 'map_editor_screen.dart';
 class MapViewerScreen extends StatefulWidget {
   final String mapKey;
   final String mapName;
+  final String? targetDestinationName;
+  final int? targetFloor;
 
-  const MapViewerScreen({super.key, required this.mapKey, required this.mapName});
+  const MapViewerScreen({
+    super.key,
+    required this.mapKey,
+    required this.mapName,
+    this.targetDestinationName,
+    this.targetFloor,
+  });
 
   @override
   State<MapViewerScreen> createState() => _MapViewerScreenState();
@@ -171,6 +179,24 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     final allPlaces = {for (final f in floors.values) ...f.waypoints};
     Waypoint? defaultStart = allPlaces.contains(_startLocation) ? _startLocation : null;
     Waypoint? defaultDest = allPlaces.contains(_destination) ? _destination : null;
+
+    if (widget.targetDestinationName != null) {
+      final match = allPlaces.cast<Waypoint?>().firstWhere(
+        (w) => w?.label.toLowerCase() == widget.targetDestinationName!.toLowerCase() ||
+               w?.displayName.toLowerCase() == widget.targetDestinationName!.toLowerCase(),
+        orElse: () => null,
+      );
+      if (match != null) {
+        defaultDest = match;
+        if (defaultStart == match) {
+          defaultStart = allPlaces.cast<Waypoint?>().firstWhere(
+            (w) => w != match,
+            orElse: () => null,
+          );
+        }
+      }
+    }
+
     if (defaultStart == null && opened.waypoints.isNotEmpty) {
       defaultStart = opened.waypoints.first;
     }
@@ -178,11 +204,13 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       defaultDest = opened.waypoints.last;
     }
 
+    final initialFloor = widget.targetFloor ?? defaultDest?.floor ?? defaultStart?.floor ?? opened.floor;
+
     setState(() {
       _floors = floors;
       _startLocation = defaultStart;
       _destination = defaultDest;
-      _showFloor(defaultStart?.floor ?? opened.floor);
+      _showFloor(initialFloor);
       _isLoading = false;
     });
   }

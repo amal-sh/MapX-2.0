@@ -37,6 +37,28 @@ class LocationService {
   static final LocationService instance = LocationService._();
   LocationService._();
 
+  /// Prompts the user for location permission if not already granted.
+  Future<bool> requestPermission() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        debugPrint('Location services are disabled.');
+        return false;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      return permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always;
+    } catch (e) {
+      debugPrint('LocationService: requestPermission error: $e');
+      return false;
+    }
+  }
+
   /// Requests permissions and retrieves the device's current GPS position.
   Future<BuildingLocation?> getCurrentLocation() async {
     try {

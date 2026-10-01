@@ -44,6 +44,8 @@ android {
 }
 
 dependencies {
+    implementation("com.google.guava:guava:33.4.0-android")
+    implementation("androidx.concurrent:concurrent-futures:1.2.0")
     implementation("com.google.ar:core:1.56.0")
     // Sceneview for 3D AR rendering
     implementation("io.github.sceneview:arsceneview:0.10.0")

@@ -9,6 +9,7 @@ import '../services/firestore_service.dart';
 import '../services/location_service.dart';
 import 'mapping_screen.dart';
 import 'map_viewer_screen.dart';
+import 'search_screen.dart';
 
 /// One saved floor map. A "building" is just every entry sharing a name.
 class _MapEntry {
@@ -34,14 +35,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<_MapEntry> _entries = [];
   Map<String, BuildingLocation> _buildingLocations = {};
   bool _isLoading = true;
-  bool _isSyncing = false;
   bool _isDeviceSupported = true;
 
   @override
   void initState() {
     super.initState();
+    _requestInitialLocationPermission();
     _loadMaps();
     _checkArCoreSupport();
+  }
+
+  Future<void> _requestInitialLocationPermission() async {
+    final granted = await LocationService.instance.requestPermission();
+    if (granted && mounted) {
+      final loc = await LocationService.instance.getCurrentLocation();
+      if (loc != null && mounted) {
+        _loadMaps();
+      }
+    }
   }
 
   Future<void> _checkArCoreSupport() async {
@@ -135,19 +146,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _loadMaps({bool syncCloud = false}) async {
-    if (syncCloud) {
-      setState(() => _isSyncing = true);
-      try {
-        final count = await FirestoreService.instance.syncFromFirestore();
-        if (mounted && count > 0) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Synced $count map(s) from Firestore!')),
-          );
-        }
-      } catch (_) {}
-      if (mounted) setState(() => _isSyncing = false);
-    }
+  Future<void> _loadMaps() async {
+    // Quietly sync any new maps from Firestore in background
+    try {
+      await FirestoreService.instance.syncFromFirestore();
+    } catch (_) {}
 
     final prefs = await SharedPreferences.getInstance();
     final entries = <_MapEntry>[];
@@ -301,15 +304,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         centerTitle: true,
         actions: [
           IconButton(
-            icon: _isSyncing
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
-                  )
-                : const Icon(CupertinoIcons.cloud_download, color: Colors.black),
-            tooltip: 'Sync from Firestore',
-            onPressed: _isSyncing ? null : () => _loadMaps(syncCloud: true),
+            icon: const Icon(CupertinoIcons.search, color: Colors.black),
+            tooltip: 'Search',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SearchScreen()),
+              );
+            },
           ),
         ],
       ),
