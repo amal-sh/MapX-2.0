@@ -252,7 +252,7 @@ class FloorGraph {
     return (
       waypoints: [
         for (final w in waypoints)
-          if (remap(w.globalStepIndex) case final n?) Waypoint(n, w.label, floor: w.floor, category: w.category),
+          if (remap(w.globalStepIndex) case final n?) w.withIndex(n),
       ],
       links: [
         for (var j = 0; j < links.length; j++)

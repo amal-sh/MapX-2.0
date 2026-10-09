@@ -193,11 +193,18 @@ class Waypoint {
   final int floor;
   final String category;
 
+  /// Outdoor GPS position, for entrances (where indoor maps meet the street
+  /// map). Null for other places.
+  final double? latitude;
+  final double? longitude;
+
   Waypoint(
     this.globalStepIndex,
     this.label, {
     this.floor = 0,
     this.category = 'room',
+    this.latitude,
+    this.longitude,
   });
 
   Map<String, dynamic> toJson() => {
@@ -205,6 +212,8 @@ class Waypoint {
     'label': label,
     'floor': floor,
     'category': category,
+    if (latitude != null) 'latitude': latitude,
+    if (longitude != null) 'longitude': longitude,
   };
 
   factory Waypoint.fromJson(Map<String, dynamic> json) => Waypoint(
@@ -212,10 +221,22 @@ class Waypoint {
     json['label'] as String,
     floor: json['floor'] as int? ?? 0,
     category: json['category'] as String? ?? 'room',
+    latitude: (json['latitude'] as num?)?.toDouble(),
+    longitude: (json['longitude'] as num?)?.toDouble(),
   );
+
+  /// The same place at another node index (after the path network changed).
+  Waypoint withIndex(int index) =>
+      Waypoint(index, label, floor: floor, category: category, latitude: latitude, longitude: longitude);
 
   static const String stairsCategory = 'stairs';
   static const String liftCategory = 'lift';
+
+  /// A door to the outside, where routes to other buildings start and end.
+  static const String entranceCategory = 'entrance';
+
+  bool get isEntrance => category == entranceCategory;
+  bool get hasGps => latitude != null && longitude != null;
 
   /// Stairs or lift: a place that leads to other floors.
   bool get isConnector => category == stairsCategory || category == liftCategory;
@@ -227,6 +248,10 @@ class Waypoint {
 
   /// Name for instructions, e.g. "Lift A" for a lift marked just "A".
   String get displayName {
+    if (isEntrance) {
+      const words = ['entrance', 'exit', 'gate', 'door'];
+      return words.any(label.toLowerCase().contains) ? label : 'Entrance ${label.trim()}';
+    }
     if (!isConnector) return label;
     final kind = category == liftCategory ? 'Lift' : 'Stairs';
     final lower = label.toLowerCase();
@@ -235,7 +260,8 @@ class Waypoint {
   }
 
   // Value equality, so a waypoint reloaded from storage still matches the
-  // one selected in a dropdown.
+  // one selected in a dropdown. GPS is left out: adjusting an entrance's
+  // position doesn't make it a different place.
   @override
   bool operator ==(Object other) =>
       other is Waypoint &&

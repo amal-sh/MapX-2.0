@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/dashboard_providers.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';
+import 'campus_map_screen.dart';
 import 'mapping_screen.dart';
 import 'map_viewer_screen.dart';
 import 'search_screen.dart';
@@ -246,6 +247,14 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
         ),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(CupertinoIcons.map, color: Colors.black),
+            tooltip: 'Campus map',
+            onPressed: () async {
+              await Navigator.push(context, MaterialPageRoute(builder: (_) => const CampusMapScreen()));
+              if (mounted) ref.read(dashboardProvider.notifier).loadMaps();
+            },
+          ),
           IconButton(
             icon: const Icon(CupertinoIcons.search, color: Colors.black),
             tooltip: 'Search',

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logic/depth_occlusion_manager.dart';
+import '../logic/campus_route_planner.dart';
 import '../logic/floor_graph.dart';
 import '../logic/floor_route_planner.dart';
 import '../logic/relocalization_manager.dart';
@@ -14,6 +15,7 @@ import '../logic/route_instructions.dart';
 import '../logic/route_segment_manager.dart';
 import '../logic/spatial_sensor_fusion.dart';
 import '../logic/wall_collision_validator.dart';
+import '../models/campus_models.dart';
 import '../models/floor_map_data.dart';
 import '../models/map_models.dart';
 import '../widgets/navigation/ar_mini_map.dart';
@@ -21,7 +23,9 @@ import '../widgets/navigation/ar_path_painter.dart';
 import '../widgets/navigation/ar_world_scanner_overlay.dart';
 import '../widgets/navigation/off_path_direction_prompt.dart';
 import '../widgets/path_map_painter.dart';
+import '../services/campus_repository.dart';
 import 'map_editor_screen.dart';
+import 'outdoor_navigation_screen.dart';
 
 class MapViewerScreen extends StatefulWidget {
   final String mapKey;
@@ -49,22 +53,30 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   int _stepCount = 0;
   int _currentFloor = 0;
 
-  // Every mapped floor of this building. The fields above always hold the
-  // floor currently shown (see _showFloor).
+  // Every mapped floor of the building shown. The fields above always hold
+  // the floor currently shown (see _showFloor).
   Map<int, FloorMapData> _floors = {};
   FloorGraph? _graph;
+
+  // The building shown, every loaded building (this one and any linked to it
+  // outdoors) and the links between them.
+  String _building = '';
+  Map<String, Map<int, FloorMapData>> _campus = {};
+  List<BuildingConnection> _connections = [];
 
   // Cross-floor trips: which connector type to route through, and the legs
   // being walked (frozen when navigation starts).
   bool _preferLift = true;
   List<TripLeg>? _activeLegs;
+  // Outdoor walks of the active trip, by the leg they follow.
+  Map<int, OutdoorHop> _activeOutdoor = {};
   int _legIndex = 0;
   // Reached the stairs/lift at the end of a leg; waiting for the walker to
   // confirm they're on the next floor.
   bool _atConnector = false;
 
-  Waypoint? _startLocation;
-  Waypoint? _destination;
+  _Place? _startLocation;
+  _Place? _destination;
   bool _isArMode = false;
   bool _useArCore = true;
   static const platform = MethodChannel('mapx/arcore');
@@ -162,57 +174,75 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
     final openedData = jsonDecode(jsonStr) as Map;
     final opened = FloorMapData.fromJson(widget.mapKey, openedData);
-    final floors = <int, FloorMapData>{opened.floor: opened};
-    // Other floors of the same building (older maps without a stored name
-    // can't be matched, so they stay single-floor).
-    final building = openedData['name'] as String?;
-    if (building != null) {
-      for (final key in prefs.getKeys().where((k) => k.startsWith('map_') && k != widget.mapKey)) {
+    final building = opened.building ?? widget.mapKey.substring(4);
+
+    // Every stored floor, grouped by building; the opened map wins a clash.
+    final all = <String, Map<int, FloorMapData>>{
+      building: {opened.floor: opened},
+    };
+    for (final key in prefs.getKeys().where((k) => k.startsWith('map_') && k != widget.mapKey)) {
+      try {
         final data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
-        if (data['name'] != building) continue;
         final floor = FloorMapData.fromJson(key, data);
-        floors.putIfAbsent(floor.floor, () => floor);
-      }
+        all.putIfAbsent(floor.building ?? key.substring(4), () => {}).putIfAbsent(floor.floor, () => floor);
+      } catch (_) {}
     }
 
+    // This building plus those linked to it outdoors.
+    final connections = await CampusRepository.instance.loadConnections();
+    final linked = {building, for (final c in connections.where((c) => c.involves(building))) c.otherEnd(building).building};
+    final campus = {for (final b in linked) if (all[b] != null) b: all[b]!};
+
     // A selected place may have been renamed or deleted in the editor.
-    final allPlaces = {for (final f in floors.values) ...f.waypoints};
-    Waypoint? defaultStart = allPlaces.contains(_startLocation) ? _startLocation : null;
-    Waypoint? defaultDest = allPlaces.contains(_destination) ? _destination : null;
+    final allPlaces = {
+      for (final b in campus.entries)
+        for (final f in b.value.values)
+          for (final w in f.waypoints) _Place(b.key, w),
+    };
+    _Place? defaultStart = allPlaces.contains(_startLocation) ? _startLocation : null;
+    _Place? defaultDest = allPlaces.contains(_destination) ? _destination : null;
+    final here = [for (final f in campus[building]!.values) for (final w in f.waypoints) _Place(building, w)];
 
     if (widget.targetDestinationName != null) {
-      final match = allPlaces.cast<Waypoint?>().firstWhere(
-        (w) => w?.label.toLowerCase() == widget.targetDestinationName!.toLowerCase() ||
-               w?.displayName.toLowerCase() == widget.targetDestinationName!.toLowerCase(),
-        orElse: () => null,
-      );
+      final name = widget.targetDestinationName!.toLowerCase();
+      final match = here
+          .where((p) => p.label.toLowerCase() == name || p.displayName.toLowerCase() == name)
+          .firstOrNull;
       if (match != null) {
         defaultDest = match;
-        if (defaultStart == match) {
-          defaultStart = allPlaces.cast<Waypoint?>().firstWhere(
-            (w) => w != match,
-            orElse: () => null,
-          );
-        }
+        if (defaultStart == match) defaultStart = here.where((p) => p != match).firstOrNull;
       }
     }
 
     if (defaultStart == null && opened.waypoints.isNotEmpty) {
-      defaultStart = opened.waypoints.first;
+      defaultStart = _Place(building, opened.waypoints.first);
     }
     if (defaultDest == null && opened.waypoints.length >= 2) {
-      defaultDest = opened.waypoints.last;
+      defaultDest = _Place(building, opened.waypoints.last);
     }
 
-    final initialFloor = widget.targetFloor ?? defaultDest?.floor ?? defaultStart?.floor ?? opened.floor;
+    // Show the destination's floor when coming from search, else the start's.
+    final shown = widget.targetDestinationName != null ? defaultDest : defaultStart;
+    final shownBuilding = shown?.building ?? building;
+    final initialFloor = widget.targetFloor ?? shown?.floor ?? opened.floor;
 
     setState(() {
-      _floors = floors;
+      _campus = campus;
+      _connections = connections;
       _startLocation = defaultStart;
       _destination = defaultDest;
-      _showFloor(initialFloor);
+      _showBuilding(shownBuilding, initialFloor);
       _isLoading = false;
     });
+  }
+
+  /// Makes [building]'s [floor] the one drawn and navigated on.
+  void _showBuilding(String building, int floor) {
+    final floors = _campus[building];
+    if (floors == null) return;
+    _building = building;
+    _floors = floors;
+    _showFloor(floors.containsKey(floor) ? floor : (floors.keys.toList()..sort()).first);
   }
 
   /// Makes [floor] the one drawn and navigated on.
@@ -226,25 +256,45 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _currentFloor = floor;
   }
 
-  /// Every place on every floor, lowest floor first.
-  List<Waypoint> get _allWaypoints {
-    final floors = _floors.keys.toList()..sort();
-    return [for (final f in floors) ..._floors[f]!.waypoints];
+  /// Every place: this building's first (lowest floor first), then linked
+  /// buildings'.
+  List<_Place> get _allPlaces {
+    final buildings = _campus.keys.toList()..sort((a, b) => a == _building ? -1 : (b == _building ? 1 : a.compareTo(b)));
+    return [
+      for (final b in buildings)
+        for (final f in (_campus[b]!.keys.toList()..sort()))
+          for (final w in _campus[b]![f]!.waypoints) _Place(b, w),
+    ];
   }
 
-  String _placeName(Waypoint w) =>
-      _floors.length > 1 ? '${w.displayName} · Floor ${w.floor}' : w.displayName;
+  String _placeName(_Place p) {
+    final multiFloor = (_campus[p.building]?.length ?? 1) > 1;
+    if (p.building == _building || _campus.length == 1) {
+      return multiFloor ? '${p.displayName} · Floor ${p.floor}' : p.displayName;
+    }
+    return '${p.displayName} · ${p.building}${multiFloor ? ', Floor ${p.floor}' : ''}';
+  }
 
-  List<TripLeg>? get _plannedLegs {
-    if (_startLocation == null || _destination == null) return null;
-    return FloorRoutePlanner.plan(
-      graphs: {for (final e in _floors.entries) e.key: e.value.graph},
-      waypointsByFloor: {for (final e in _floors.entries) e.key: e.value.waypoints},
-      start: _startLocation!,
-      destination: _destination!,
+  CampusTrip? get _plannedTrip {
+    final start = _startLocation, destination = _destination;
+    if (start == null || destination == null) return null;
+    return CampusRoutePlanner.plan(
+      graphs: {
+        for (final b in _campus.entries) b.key: {for (final f in b.value.entries) f.key: f.value.graph},
+      },
+      waypoints: {
+        for (final b in _campus.entries) b.key: {for (final f in b.value.entries) f.key: f.value.waypoints},
+      },
+      connections: _connections,
+      startBuilding: start.building,
+      start: start.place,
+      destinationBuilding: destination.building,
+      destination: destination.place,
       preferLift: _preferLift,
     );
   }
+
+  List<TripLeg>? get _plannedLegs => _plannedTrip?.legs;
 
   /// The leg on the floor being shown: the one being walked while
   /// navigating, otherwise the planned leg on this floor (if any).
@@ -252,10 +302,13 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     if (_activeLegs != null) {
       return _legIndex < _activeLegs!.length ? _activeLegs![_legIndex] : null;
     }
-    return _plannedLegs?.where((l) => l.floor == _currentFloor).firstOrNull;
+    return _plannedLegs?.where((l) => l.building == _building && l.floor == _currentFloor).firstOrNull;
   }
 
   bool get _hasNextLeg => _activeLegs != null && _legIndex < _activeLegs!.length - 1;
+
+  /// The outdoor walk after the current leg, if the trip leaves the building.
+  OutdoorHop? get _outdoorNext => _activeLegs == null ? null : _activeOutdoor[_legIndex];
 
   List<PathNode> get _computedNodes => _graph?.nodes ?? const [];
 
@@ -273,7 +326,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
   List<PathNode>? get _routeNodes {
     final leg = _displayLeg;
-    if (leg == null || leg.floor != _currentFloor) return null;
+    if (leg == null || leg.floor != _currentFloor || (leg.building != null && leg.building != _building)) return null;
     final graph = _graph;
     if (graph == null) return null;
     // Shortest way through the floor's paths, including drawn shortcuts.
@@ -337,8 +390,8 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   Future<void> _startSensorArNavigation() => _startNavigation(useArCore: false);
 
   Future<void> _startNavigation({required bool useArCore}) async {
-    final legs = _plannedLegs;
-    if (legs == null || !_canStartNavigation) {
+    final trip = _plannedTrip;
+    if (trip == null || !_canStartNavigation) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Select a start and destination below first')),
       );
@@ -357,9 +410,11 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       return;
     }
 
+    final legs = trip.legs;
     _activeLegs = legs;
+    _activeOutdoor = trip.outdoorAfterLeg;
     _legIndex = 0;
-    _showFloor(legs.first.floor);
+    _showBuilding(legs.first.building ?? _building, legs.first.floor);
     _isFloorDetected = false;
     _floorConfidence = 0.0;
     _showFloorAnchoredBadge = false;
@@ -518,6 +573,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   /// floor's map and continue from the matching stairs/lift there.
   Future<void> _advanceLeg() async {
     if (!_hasNextLeg) return;
+    final outdoor = _outdoorNext;
     await _fusionSub?.cancel();
     _fusionSub = null;
     _fusionEngine?.dispose();
@@ -526,17 +582,68 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _segmentManager = null;
     if (!mounted) return;
 
+    if (outdoor != null && !await _walkOutside(outdoor)) return;
+    if (!mounted) return;
+
     _legIndex++;
-    _showFloor(_activeLegs![_legIndex].floor);
+    final leg = _activeLegs![_legIndex];
+    _showBuilding(leg.building ?? _building, leg.floor);
     _beginLeg();
     setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Now navigating on Floor $_currentFloor')),
+      SnackBar(
+        content: Text(outdoor != null ? 'Now navigating in $_building' : 'Now navigating on Floor $_currentFloor'),
+      ),
     );
+  }
+
+  /// The outdoor part of a trip: the camera and AR session are released
+  /// while the street map guides the walker, then restarted inside the next
+  /// building. Returns false if the walker stopped navigating outside.
+  Future<bool> _walkOutside(OutdoorHop hop) async {
+    try {
+      await platform.invokeMethod(_useArCore ? 'stopArNavigation' : 'stopCameraPreview');
+      await platform.invokeMethod('stopSession');
+    } catch (e) {
+      debugPrint('AR Error: $e');
+    }
+    if (!mounted) return false;
+    final arrived = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => OutdoorNavigationScreen(hop: hop)),
+    );
+    if (!mounted) return false;
+    if (arrived != true) {
+      await _stopNavigation();
+      return false;
+    }
+    try {
+      await platform.invokeMethod('startSession');
+      await platform.invokeMethod(_useArCore ? 'startArNavigation' : 'startCameraPreview');
+    } on PlatformException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? 'Could not restart AR')));
+      }
+      await _stopNavigation();
+      return false;
+    }
+    // A new building means a new floor to find.
+    _isFloorDetected = false;
+    _floorConfidence = 0.0;
+    _showFloorAnchoredBadge = false;
+    return true;
   }
 
   ({String title, String subtitle, IconData icon}) get _connectorGuidance {
     final exit = _activeLegs![_legIndex].to;
+    final outdoor = _outdoorNext;
+    if (outdoor != null) {
+      return (
+        title: 'Exit through ${exit.displayName}',
+        subtitle: 'Then walk to ${outdoor.toBuilding}. Tap "Walk outside" at the door.',
+        icon: Icons.door_front_door_outlined,
+      );
+    }
     final nextFloor = _activeLegs![_legIndex + 1].floor;
     final isLift = exit.category == Waypoint.liftCategory;
     return (
@@ -746,51 +853,64 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       MaterialPageRoute(builder: (_) => MapEditorScreen(mapKey: floor.key, title: title)),
     );
     if (saved == true && mounted) {
+      final building = _building;
       await _loadMapData();
-      if (mounted) _showFloor(floor.floor);
-      if (mounted) setState(() {});
+      if (mounted) setState(() => _showBuilding(building, floor.floor));
     }
   }
 
-  /// Under the pickers for a cross-floor trip: the lift/stairs choice and the
-  /// planned route, or why there isn't one.
-  Widget _buildFloorChangeSummary() {
-    final legs = _plannedLegs;
+  /// Under the pickers for a trip that changes floor or building: the
+  /// lift/stairs choice and the planned route, or why there isn't one.
+  Widget _buildTripSummary() {
+    final start = _startLocation!, destination = _destination!;
+    final trip = _plannedTrip;
     const muted = TextStyle(fontSize: 12, color: Color(0xFF71717A));
-    if (legs == null) {
+    if (trip == null) {
+      final reason = start.building != destination.building
+          ? '${start.building} and ${destination.building} aren\'t linked. On the home screen, open the Campus '
+              'Map and link them through their entrances.'
+          : 'No stairs or lift links Floor ${start.floor} and Floor ${destination.floor}. '
+              'While mapping, mark the same stairs/lift with the same name on both floors.';
       return Padding(
         padding: const EdgeInsets.only(top: 10),
-        child: Text(
-          'No stairs or lift links Floor ${_startLocation!.floor} and Floor ${_destination!.floor}. '
-          'While mapping, mark the same stairs/lift with the same name on both floors.',
-          style: const TextStyle(fontSize: 12, color: Color(0xFFB91C1C)),
-        ),
+        child: Text(reason, style: const TextStyle(fontSize: 12, color: Color(0xFFB91C1C))),
       );
     }
-    final via = legs.first.to;
+
+    final legs = trip.legs;
+    final steps = <String>[];
+    var changesFloor = false;
+    for (var i = 0; i < legs.length - 1; i++) {
+      final hop = trip.outdoorAfterLeg[i];
+      if (hop != null) {
+        steps.add('exit at ${legs[i].to.displayName}, walk ${hop.connection.distanceMeters.toStringAsFixed(0)} m '
+            'outside to ${hop.toBuilding}');
+      } else {
+        changesFloor = true;
+        steps.add('${legs[i].to.displayName} to Floor ${legs[i + 1].floor}');
+      }
+    }
+    final summary = Text('Via ${steps.join(', then ')}', style: muted);
     return Padding(
       padding: const EdgeInsets.only(top: 10),
-      child: Row(
-        children: [
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: true, label: Text('Lift'), icon: Icon(Icons.elevator_outlined, size: 16)),
-              ButtonSegment(value: false, label: Text('Stairs'), icon: Icon(Icons.stairs_outlined, size: 16)),
-            ],
-            selected: {_preferLift},
-            showSelectedIcon: false,
-            style: const ButtonStyle(visualDensity: VisualDensity.compact),
-            onSelectionChanged: (s) => setState(() => _preferLift = s.first),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'Via ${via.displayName} to Floor ${legs.last.floor}',
-              style: muted,
-            ),
-          ),
-        ],
-      ),
+      child: changesFloor
+          ? Row(
+              children: [
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: true, label: Text('Lift'), icon: Icon(Icons.elevator_outlined, size: 16)),
+                    ButtonSegment(value: false, label: Text('Stairs'), icon: Icon(Icons.stairs_outlined, size: 16)),
+                  ],
+                  selected: {_preferLift},
+                  showSelectedIcon: false,
+                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                  onSelectionChanged: (s) => setState(() => _preferLift = s.first),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: summary),
+              ],
+            )
+          : summary,
     );
   }
 
@@ -816,6 +936,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _relocalizer = null;
     _segmentManager = null;
     _activeLegs = null;
+    _activeOutdoor = {};
     _legIndex = 0;
     _atConnector = false;
     try {
@@ -835,7 +956,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
           _startLocation = _destination;
           _destination = null;
         }
-        _showFloor(_startLocation?.floor ?? _currentFloor);
+        _showBuilding(_startLocation?.building ?? _building, _startLocation?.floor ?? _currentFloor);
         if (_startLocation != null) {
           final nodes = _computedNodes;
           final idx = _startLocation!.globalStepIndex.clamp(0, nodes.isEmpty ? 0 : nodes.length - 1);
@@ -1073,13 +1194,17 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                       elevation: 6,
                     ),
                     icon: Icon(
-                      _activeLegs![_legIndex].to.category == Waypoint.liftCategory
-                          ? Icons.elevator_outlined
-                          : Icons.stairs_outlined,
+                      _outdoorNext != null
+                          ? Icons.directions_walk
+                          : _activeLegs![_legIndex].to.category == Waypoint.liftCategory
+                              ? Icons.elevator_outlined
+                              : Icons.stairs_outlined,
                       size: 20,
                     ),
                     label: Text(
-                      "I'm on Floor ${_activeLegs![_legIndex + 1].floor}",
+                      _outdoorNext != null
+                          ? 'Walk outside to ${_outdoorNext!.toBuilding}'
+                          : "I'm on Floor ${_activeLegs![_legIndex + 1].floor}",
                       style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
                     ),
                     onPressed: _advanceLeg,
@@ -1123,7 +1248,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
           color: Colors.black,
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text(widget.mapName),
+        title: Text(_building.isEmpty ? widget.mapName : '$_building · Floor $_currentFloor'),
         actions: [
           IconButton(
             icon: const Icon(CupertinoIcons.videocam),
@@ -1156,7 +1281,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                     ],
                   ),
                 ),
-                if (_allWaypoints.isNotEmpty)
+                if (_allPlaces.isNotEmpty)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     decoration: const BoxDecoration(
@@ -1169,28 +1294,28 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                         Row(
                           children: [
                             Expanded(
-                              child: DropdownButtonFormField<Waypoint>(
+                              child: DropdownButtonFormField<_Place>(
                                 key: ValueKey(('start', _startLocation)),
                                 isExpanded: true,
                                 decoration: const InputDecoration(labelText: 'Start'),
                                 initialValue: _startLocation,
-                                items: _allWaypoints
+                                items: _allPlaces
                                     .map((w) => DropdownMenuItem(value: w, child: Text(_placeName(w), overflow: TextOverflow.ellipsis)))
                                     .toList(),
                                 onChanged: (val) => setState(() {
                                   _startLocation = val;
-                                  if (val != null) _showFloor(val.floor);
+                                  if (val != null) _showBuilding(val.building, val.floor);
                                 }),
                               ),
                             ),
                             const SizedBox(width: 16),
                             Expanded(
-                              child: DropdownButtonFormField<Waypoint>(
+                              child: DropdownButtonFormField<_Place>(
                                 key: ValueKey(('dest', _destination)),
                                 isExpanded: true,
                                 decoration: const InputDecoration(labelText: 'Destination'),
                                 initialValue: _destination,
-                                items: _allWaypoints
+                                items: _allPlaces
                                     .map((w) => DropdownMenuItem(value: w, child: Text(_placeName(w), overflow: TextOverflow.ellipsis)))
                                     .toList(),
                                 onChanged: (val) => setState(() => _destination = val),
@@ -1200,8 +1325,9 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                         ),
                         if (_startLocation != null &&
                             _destination != null &&
-                            _startLocation!.floor != _destination!.floor)
-                          _buildFloorChangeSummary(),
+                            (_startLocation!.building != _destination!.building ||
+                                _startLocation!.floor != _destination!.floor))
+                          _buildTripSummary(),
                       ],
                     ),
                   ),
@@ -1373,4 +1499,24 @@ class _DistanceBar extends StatelessWidget {
       ],
     );
   }
+}
+
+/// A place in a particular building. Place names and node numbers only mean
+/// something within one building, so pickers and trips carry both.
+class _Place {
+  final String building;
+  final Waypoint place;
+
+  const _Place(this.building, this.place);
+
+  int get floor => place.floor;
+  String get label => place.label;
+  String get displayName => place.displayName;
+  int get globalStepIndex => place.globalStepIndex;
+
+  @override
+  bool operator ==(Object other) => other is _Place && other.building == building && other.place == place;
+
+  @override
+  int get hashCode => Object.hash(building, place);
 }

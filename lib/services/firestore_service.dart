@@ -170,4 +170,41 @@ class FirestoreService {
       return 0;
     }
   }
+
+  // ---- Building connections ----------------------------------------------
+
+  CollectionReference<Map<String, dynamic>>? get _connectionsCol => _firestore?.collection('connections');
+
+  /// Saves an outdoor route between two buildings, keyed by its id.
+  Future<void> saveConnection(String id, Map<String, dynamic> data) async {
+    try {
+      await _connectionsCol?.doc(_docId(id)).set({...data, 'updatedAt': FieldValue.serverTimestamp()});
+    } catch (e) {
+      debugPrint('Firestore: Error saving connection "$id": $e');
+    }
+  }
+
+  Future<void> deleteConnection(String id) async {
+    try {
+      await _connectionsCol?.doc(_docId(id)).delete();
+    } catch (e) {
+      debugPrint('Firestore: Error deleting connection "$id": $e');
+    }
+  }
+
+  /// All stored connections, or null when Firestore isn't reachable.
+  Future<List<Map<String, dynamic>>?> fetchConnections() async {
+    try {
+      final col = _connectionsCol;
+      if (col == null) return null;
+      final snapshot = await col.get();
+      return [for (final doc in snapshot.docs) Map<String, dynamic>.from(doc.data())..remove('updatedAt')];
+    } catch (e) {
+      debugPrint('Firestore: fetchConnections failed: $e');
+      return null;
+    }
+  }
+
+  // Firestore document ids can't contain '/'.
+  static String _docId(String id) => id.replaceAll('/', '_');
 }

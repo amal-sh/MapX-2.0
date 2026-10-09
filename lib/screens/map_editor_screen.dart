@@ -195,7 +195,7 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
     );
     if (result == null) return;
     setState(() {
-      _waypoints.add(Waypoint(node, result.label, floor: _map!.floor, category: result.category));
+      _waypoints.add(result.toWaypoint(node, _map!.floor));
       _dirty = true;
     });
   }
@@ -211,7 +211,7 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
       if (result.delete) {
         _waypoints.removeAt(i);
       } else {
-        _waypoints[i] = Waypoint(place.globalStepIndex, result.label, floor: place.floor, category: result.category);
+        _waypoints[i] = result.toWaypoint(place.globalStepIndex, place.floor);
       }
       _dirty = true;
     });
@@ -298,7 +298,7 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
           }
         }
         if (_waypoints.any((x) => x.globalStepIndex == node)) continue;
-        _waypoints.add(Waypoint(node, w.label, floor: map.floor, category: w.category));
+        _waypoints.add(w.withIndex(node));
       }
       _dirty = true;
     });

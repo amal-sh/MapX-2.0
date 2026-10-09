@@ -446,7 +446,7 @@ class _MappingScreenState extends State<MappingScreen> {
       [...base.nodes, ...added],
       [
         ...branch.baseWaypoints,
-        for (final w in _waypoints) Waypoint(indexOf(w.globalStepIndex), w.label, floor: w.floor, category: w.category),
+        for (final w in _waypoints) w.withIndex(indexOf(w.globalStepIndex)),
       ],
       edges: [...base.edges, for (var k = 1; k < walk.length; k++) (indexOf(k - 1), indexOf(k))],
       walkEnd: base.walkNodeCount - 1,
@@ -544,7 +544,7 @@ class _MappingScreenState extends State<MappingScreen> {
       _isAddingNode = false;
       _pendingGrace = true;
       if (marker != null) {
-        _waypoints.add(Waypoint(_stepCount, marker.label, floor: widget.floor, category: marker.category));
+        _waypoints.add(marker.toWaypoint(_stepCount, widget.floor));
       }
     });
   }

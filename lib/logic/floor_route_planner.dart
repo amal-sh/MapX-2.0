@@ -7,7 +7,10 @@ class TripLeg {
   final Waypoint from;
   final Waypoint to;
 
-  const TripLeg({required this.floor, required this.from, required this.to});
+  /// The building this leg is in, for trips spanning several buildings.
+  final String? building;
+
+  const TripLeg({required this.floor, required this.from, required this.to, this.building});
 
   /// Stairs or lift the walker takes at the end of this leg, if any.
   Waypoint? get exitConnector => to.isConnector ? to : null;
