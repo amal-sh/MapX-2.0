@@ -85,23 +85,21 @@ void main() {
     // Verify Drawer Header
     expect(find.text('v2.0 • Indoor AR Engine'), findsOneWidget);
 
-    // Verify User Profile Card
-    expect(find.text('John Doe'), findsOneWidget);
-    expect(find.text('Visiting Scholar'), findsOneWidget);
-    expect(find.text('Beacon'), findsOneWidget);
-    expect(find.text('JD'), findsOneWidget);
-
-    // Verify Explore section
+    // Verify Explore section (live offline data, no hardcoded badge/subtitle)
     expect(find.text('EXPLORE'), findsOneWidget);
     expect(find.text('Campus Overview'), findsOneWidget);
     expect(find.text('Saved Places & Rooms'), findsOneWidget);
     expect(find.text('Recent Trips'), findsOneWidget);
+    // Empty history shows a placeholder instead of a hardcoded destination.
+    expect(find.text('No trips yet'), findsOneWidget);
+    // Empty saves show no count badge.
+    expect(find.text('4'), findsNothing);
 
     // Verify Management section with Admin Studio Card
     expect(find.text('MANAGEMENT'), findsOneWidget);
     expect(find.text('ADMIN ONLY'), findsOneWidget);
     expect(find.text('Admin Studio'), findsOneWidget);
-    expect(find.text('Floor mapping, CAD editor & sync'), findsOneWidget);
+    expect(find.text('Floor mapping'), findsOneWidget);
 
     // Verify bottom options
     expect(find.text('Preferences'), findsOneWidget);

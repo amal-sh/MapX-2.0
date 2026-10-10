@@ -5,10 +5,12 @@ import 'package:latlong2/latlong.dart';
 import '../logic/geo_math.dart';
 import '../models/campus_models.dart';
 import '../models/map_models.dart';
+import '../models/saved_place.dart';
 import '../services/campus_repository.dart';
 import '../services/location_service.dart';
 import '../services/routing_service.dart';
 import '../widgets/osm_layers.dart';
+import '../widgets/save_place_button.dart';
 import 'map_viewer_screen.dart';
 
 /// OpenStreetMap view of every mapped building and the outdoor routes
@@ -247,7 +249,17 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           children: [
-            Text(b.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(b.name,
+                      style: const TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.w700)),
+                ),
+                SavePlaceButton(
+                    place: SavedPlace.forBuilding(b.name)),
+              ],
+            ),
             Text(
               '${floors.length} floor${floors.length == 1 ? '' : 's'} · '
               '${b.entrancesWithGps.length} entrance${b.entrancesWithGps.length == 1 ? '' : 's'} on the map',
@@ -259,7 +271,17 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.layers_outlined),
                 title: Text('Floor $f'),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SavePlaceButton(
+                      place: SavedPlace.forFloor(b.name, f,
+                          mapKey: b.floorKeys[f]),
+                      iconSize: 18,
+                    ),
+                    const Icon(Icons.chevron_right),
+                  ],
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   Navigator.push(

@@ -8,9 +8,11 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../logic/geo_math.dart';
 import '../models/campus_models.dart';
+import '../models/saved_place.dart';
 import '../providers/dashboard_providers.dart';
 import '../services/location_service.dart';
 import '../widgets/dashboard_sidebar_drawer.dart';
+import '../widgets/save_place_button.dart';
 import 'admin_studio_screen.dart';
 import 'campus_map_screen.dart';
 import 'map_viewer_screen.dart';
@@ -529,6 +531,10 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
                     ),
                   ],
                 ),
+              ),
+              SavePlaceButton(
+                place: SavedPlace.forBuilding(name),
+                iconSize: 19,
               ),
               GestureDetector(
                 onTap: () {

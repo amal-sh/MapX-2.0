@@ -25,6 +25,7 @@ import '../widgets/navigation/ar_world_scanner_overlay.dart';
 import '../widgets/navigation/off_path_direction_prompt.dart';
 import '../widgets/path_map_painter.dart';
 import '../services/campus_repository.dart';
+import '../services/navigation_history_service.dart';
 import 'outdoor_navigation_screen.dart';
 
 class MapViewerScreen extends StatefulWidget {
@@ -1203,6 +1204,26 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _floorConfidence = 0.0;
     _showFloorAnchoredBadge = false;
     final bool didArrive = _hasArrivedAtDestination;
+    // Persist completed navigations offline so Recent Trips stays live.
+    // Captured before state is reset below.
+    final NavigationHistoryService? historyService =
+        didArrive ? NavigationHistoryService.instance : null;
+    final String? historyFromBuilding = didArrive
+        ? (_activeLegs?.first.building ??
+            _startLocation?.building ??
+            _building)
+        : null;
+    final Waypoint? historyFromWaypoint =
+        didArrive ? (_activeLegs?.first.from ?? _startLocation?.place) : null;
+    final String? historyToBuilding = didArrive
+        ? (_activeLegs?.last.building ??
+            _destination?.building ??
+            _building)
+        : null;
+    final Waypoint? historyToWaypoint =
+        didArrive ? (_activeLegs?.last.to ?? _destination?.place) : null;
+    final double? historyDistance =
+        didArrive ? (_plannedTrip?.distanceMeters ?? _routeTotalDistance) : null;
     _hasArrivedAtDestination = false;
     _arrivalZoneEntryTime = null;
     _isFacingPath = true;
@@ -1247,6 +1268,21 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
           }
         }
       });
+      if (historyService != null &&
+          historyFromBuilding != null &&
+          historyFromWaypoint != null &&
+          historyToBuilding != null &&
+          historyToWaypoint != null) {
+        unawaited(historyService.logTrip(
+          fromBuilding: historyFromBuilding,
+          fromFloor: historyFromWaypoint.floor,
+          fromLabel: historyFromWaypoint.displayName,
+          toBuilding: historyToBuilding,
+          toFloor: historyToWaypoint.floor,
+          toLabel: historyToWaypoint.displayName,
+          distanceMeters: historyDistance,
+        ));
+      }
       // Refresh map data to ensure latest waypoints are in sync
       _loadMapData();
     }

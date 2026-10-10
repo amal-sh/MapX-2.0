@@ -2,9 +2,11 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/saved_place.dart';
 import '../models/search_models.dart';
 import '../providers/search_providers.dart';
 import '../services/search_service.dart';
+import '../widgets/save_place_button.dart';
 import 'map_viewer_screen.dart';
 
 class SearchScreen extends ConsumerStatefulWidget {
@@ -420,7 +422,21 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             ),
         ],
       ),
-      trailing: const Icon(CupertinoIcons.chevron_right, size: 14, color: Color(0xFFA1A1AA)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SavePlaceButton(
+            place: SavedPlace.forPlace(
+              wp.buildingName,
+              wp.floor,
+              wp.name,
+              mapKey: wp.mapKey,
+            ),
+          ),
+          const Icon(CupertinoIcons.chevron_right,
+              size: 14, color: Color(0xFFA1A1AA)),
+        ],
+      ),
       onTap: () => _openWaypoint(wp),
     );
   }
@@ -445,7 +461,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         '${b.floorSummary}${b.distanceFormatted.isNotEmpty ? " · ${b.distanceFormatted}" : ""}',
         style: const TextStyle(fontSize: 12, color: Color(0xFF71717A)),
       ),
-      trailing: const Icon(CupertinoIcons.chevron_right, size: 14, color: Color(0xFFA1A1AA)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SavePlaceButton(
+            place: SavedPlace.forBuilding(
+              b.name,
+              mapKey: b.primaryMapKey,
+            ),
+          ),
+          const Icon(CupertinoIcons.chevron_right,
+              size: 14, color: Color(0xFFA1A1AA)),
+        ],
+      ),
       onTap: () => _openBuilding(b),
     );
   }

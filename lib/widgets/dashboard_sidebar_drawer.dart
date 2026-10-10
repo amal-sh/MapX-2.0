@@ -1,14 +1,27 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../models/navigation_trip.dart';
 import '../screens/admin_studio_screen.dart';
 import '../screens/campus_map_screen.dart';
-import '../screens/search_screen.dart';
+import '../screens/recent_trips_screen.dart';
+import '../screens/saved_places_screen.dart';
+import '../services/navigation_history_service.dart';
+import '../services/saved_places_service.dart';
+import '../services/user_preferences_service.dart';
 
-/// Navigation sidebar drawer matching Image 2.
-class DashboardSidebarDrawer extends StatelessWidget {
+/// Navigation sidebar drawer.
+///
+/// Saved-place counts and the latest trip are loaded from the offline
+/// on-device stores ([SavedPlacesService], [NavigationHistoryService]) —
+/// nothing here is hardcoded. Diagnostics are queried live from the
+/// device instead of claiming fixed "ready" values.
+class DashboardSidebarDrawer extends StatefulWidget {
   final bool isAdminMode;
+  final String appVersion;
   final VoidCallback? onOpenAdminStudio;
   final VoidCallback? onOpenCampusOverview;
   final VoidCallback? onOpenSavedPlaces;
@@ -20,6 +33,7 @@ class DashboardSidebarDrawer extends StatelessWidget {
   const DashboardSidebarDrawer({
     super.key,
     this.isAdminMode = false,
+    this.appVersion = 'v2.0',
     this.onOpenAdminStudio,
     this.onOpenCampusOverview,
     this.onOpenSavedPlaces,
@@ -29,140 +43,240 @@ class DashboardSidebarDrawer extends StatelessWidget {
     this.onOpenHelp,
   });
 
-  void _handleCampusOverview(BuildContext context) {
-    if (onOpenCampusOverview != null) {
-      onOpenCampusOverview!();
+  @override
+  State<DashboardSidebarDrawer> createState() => _DashboardSidebarDrawerState();
+}
+
+class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
+  static const _arChannel = MethodChannel('mapx/arcore');
+
+  int _savedCount = 0;
+  NavigationTrip? _latestTrip;
+  String _arCoreStatus = 'Checking…';
+  String _locationStatus = 'Checking…';
+
+  @override
+  void initState() {
+    super.initState();
+    _reloadOfflineData();
+    _loadDiagnostics();
+  }
+
+  Future<void> _reloadOfflineData() async {
+    final saved = await SavedPlacesService.instance.load();
+    final latest = await NavigationHistoryService.instance.latest();
+    if (!mounted) return;
+    setState(() {
+      _savedCount = saved.length;
+      _latestTrip = latest;
+    });
+  }
+
+  Future<void> _loadDiagnostics() async {
+    String arCore;
+    try {
+      final availability =
+          await _arChannel.invokeMethod<String>('checkAvailability');
+      arCore = availability == 'SUPPORTED_INSTALLED'
+          ? 'Installed & Ready'
+          : (availability == null || availability.isEmpty
+              ? 'Not available'
+              : availability);
+    } on MissingPluginException {
+      arCore = 'Unavailable in preview';
+    } catch (_) {
+      arCore = 'Not available';
+    }
+
+    String location;
+    try {
+      final permission = await Geolocator.checkPermission();
+      location =
+          (permission == LocationPermission.always ||
+                  permission == LocationPermission.whileInUse)
+              ? 'Granted (live)'
+              : 'Not granted';
+    } catch (_) {
+      location = 'Unknown';
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _arCoreStatus = arCore;
+      _locationStatus = location;
+    });
+  }
+
+  Future<void> _pushAndRefresh(Widget page) async {
+    Navigator.pop(context);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => page),
+    );
+    await _reloadOfflineData();
+  }
+
+  void _handleCampusOverview() {
+    if (widget.onOpenCampusOverview != null) {
+      widget.onOpenCampusOverview!();
     } else {
-      Navigator.pop(context);
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const CampusMapScreen()),
-      );
+      _pushAndRefresh(const CampusMapScreen());
     }
   }
 
-  void _handleSavedPlaces(BuildContext context) {
-    if (onOpenSavedPlaces != null) {
-      onOpenSavedPlaces!();
+  void _handleSavedPlaces() {
+    if (widget.onOpenSavedPlaces != null) {
+      widget.onOpenSavedPlaces!();
     } else {
-      Navigator.pop(context);
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const SearchScreen()),
-      );
+      _pushAndRefresh(const SavedPlacesScreen());
     }
   }
 
-  void _handleRecentTrips(BuildContext context) {
-    if (onOpenRecentTrips != null) {
-      onOpenRecentTrips!();
+  void _handleRecentTrips() {
+    if (widget.onOpenRecentTrips != null) {
+      widget.onOpenRecentTrips!();
     } else {
-      Navigator.pop(context);
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const SearchScreen()),
-      );
+      _pushAndRefresh(const RecentTripsScreen());
     }
   }
 
-  void _handlePreferences(BuildContext context) {
-    if (onOpenPreferences != null) {
-      onOpenPreferences!();
+  void _handlePreferences() {
+    if (widget.onOpenPreferences != null) {
+      widget.onOpenPreferences!();
     } else {
       Navigator.pop(context);
-      _showDefaultPreferencesSheet(context);
+      _showPreferencesSheet();
     }
   }
 
-  void _handleDiagnostics(BuildContext context) {
-    if (onOpenDiagnostics != null) {
-      onOpenDiagnostics!();
+  void _handleDiagnostics() {
+    if (widget.onOpenDiagnostics != null) {
+      widget.onOpenDiagnostics!();
     } else {
       Navigator.pop(context);
-      _showDefaultDiagnosticsDialog(context);
+      _showDiagnosticsDialog();
     }
   }
 
-  void _handleHelp(BuildContext context) {
-    if (onOpenHelp != null) {
-      onOpenHelp!();
+  void _handleHelp() {
+    if (widget.onOpenHelp != null) {
+      widget.onOpenHelp!();
     } else {
       Navigator.pop(context);
-      _showDefaultHelpDialog(context);
+      _showHelpDialog();
     }
   }
 
-  void _showDefaultPreferencesSheet(BuildContext context) {
-    showModalBottomSheet(
+  Future<void> _showPreferencesSheet() {
+    final prefs = UserPreferencesService.instance;
+    return showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Preferences',
-                style: GoogleFonts.inter(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
+      builder: (ctx) => FutureBuilder<List<String>>(
+        future: Future.wait(
+            [prefs.loadDistanceUnits(), prefs.loadMapTheme()]),
+        builder: (context, snapshot) {
+          var units = UserPreferencesService.unitsMeters;
+          var theme = UserPreferencesService.themeMonochrome;
+          if (snapshot.hasData) {
+            units = snapshot.data![0];
+            theme = snapshot.data![1];
+          }
+          return StatefulBuilder(
+            builder: (context, setSheetState) => SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Preferences',
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Stored on this device only.',
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        color: const Color(0xFF71717A),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Units of Distance',
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF71717A),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                            value: UserPreferencesService.unitsMeters,
+                            label: Text('Meters')),
+                        ButtonSegment(
+                            value: UserPreferencesService.unitsFeet,
+                            label: Text('Feet')),
+                      ],
+                      selected: {units},
+                      showSelectedIcon: false,
+                      onSelectionChanged: (selected) async {
+                        await prefs.saveDistanceUnits(selected.first);
+                        setSheetState(() => units = selected.first);
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Default Map Theme',
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF71717A),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                            value:
+                                UserPreferencesService.themeMonochrome,
+                            label: Text('Monochrome')),
+                        ButtonSegment(
+                            value: UserPreferencesService.themeSystem,
+                            label: Text('System')),
+                      ],
+                      selected: {theme},
+                      showSelectedIcon: false,
+                      onSelectionChanged: (selected) async {
+                        await prefs.saveMapTheme(selected.first);
+                        setSheetState(() => theme = selected.first);
+                      },
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 16),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(CupertinoIcons.gauge, color: Colors.black),
-                title: Text(
-                  'Units of Distance',
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                trailing: Text(
-                  'Meters (m)',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    color: const Color(0xFF71717A),
-                  ),
-                ),
-              ),
-              const Divider(color: Color(0xFFE4E4E7)),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(CupertinoIcons.map, color: Colors.black),
-                title: Text(
-                  'Default Map Theme',
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                trailing: Text(
-                  'Monochrome Minimal',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    color: const Color(0xFF71717A),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
 
-  void _showDefaultDiagnosticsDialog(BuildContext context) {
+  void _showDiagnosticsDialog() {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         title: Row(
           children: [
             const Icon(CupertinoIcons.antenna_radiowaves_left_right,
@@ -182,13 +296,13 @@ class DashboardSidebarDrawer extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _diagRow('ARCore Support', 'Installed & Ready'),
+            _diagRow('ARCore Support', _arCoreStatus),
             const SizedBox(height: 10),
-            _diagRow('Pedestrian Dead Reckoning', 'Active (Step + Heading)'),
+            _diagRow('Location Permission', _locationStatus),
             const SizedBox(height: 10),
-            _diagRow('GPS Alignment', 'Acquired (Live)'),
+            _diagRow('Step + Heading (PDR)', 'On-device'),
             const SizedBox(height: 10),
-            _diagRow('Compass Heading', 'Calibrated (IMU + Game Rotation)'),
+            _diagRow('Compass Heading', 'On-device (IMU fusion)'),
           ],
         ),
         actions: [
@@ -211,33 +325,41 @@ class DashboardSidebarDrawer extends StatelessWidget {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(
-          label,
-          style: GoogleFonts.inter(
-            fontSize: 13,
-            color: const Color(0xFF71717A),
+        Expanded(
+          child: Text(
+            label,
+            style: GoogleFonts.inter(
+              fontSize: 13,
+              color: const Color(0xFF71717A),
+            ),
           ),
         ),
-        Text(
-          value,
-          style: GoogleFonts.inter(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: const Color(0xFF18181B),
+        const SizedBox(width: 12),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: GoogleFonts.inter(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: const Color(0xFF18181B),
+            ),
           ),
         ),
       ],
     );
   }
 
-  void _showDefaultHelpDialog(BuildContext context) {
+  void _showHelpDialog() {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         title: Text(
           'MapX Help & Feedback',
-          style: GoogleFonts.inter(fontSize: 17, fontWeight: FontWeight.w700),
+          style:
+              GoogleFonts.inter(fontSize: 17, fontWeight: FontWeight.w700),
         ),
         content: Text(
           'MapX provides high-precision indoor AR pedestrian navigation using sensor fusion (PDR + ARCore + building coordinate transforms).\n\n• User Mode: Tap any complex or floor to preview paths or navigate in AR.\n• Admin Mode: Open Admin Studio from the sidebar to record floor trajectories, add floor levels, and sync map data.',
@@ -265,6 +387,10 @@ class DashboardSidebarDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final recentSubtitle = _latestTrip == null
+        ? 'No trips yet'
+        : _latestTrip!.destinationDisplay;
+
     return Drawer(
       backgroundColor: Colors.white,
       surfaceTintColor: Colors.transparent,
@@ -289,7 +415,7 @@ class DashboardSidebarDrawer extends StatelessWidget {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        'v2.0 • Indoor AR Engine',
+                        '${widget.appVersion} • Indoor AR Engine',
                         style: GoogleFonts.inter(
                           fontSize: 12,
                           fontWeight: FontWeight.w500,
@@ -344,10 +470,10 @@ class DashboardSidebarDrawer extends StatelessWidget {
 
               // Campus Overview (Selected pill)
               GestureDetector(
-                onTap: () => _handleCampusOverview(context),
+                onTap: _handleCampusOverview,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 11),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF4F4F5),
                     borderRadius: BorderRadius.circular(12),
@@ -377,10 +503,10 @@ class DashboardSidebarDrawer extends StatelessWidget {
 
               // Saved Places & Rooms
               GestureDetector(
-                onTap: () => _handleSavedPlaces(context),
+                onTap: _handleSavedPlaces,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 11),
                   child: Row(
                     children: [
                       const Icon(CupertinoIcons.bookmark,
@@ -396,23 +522,25 @@ class DashboardSidebarDrawer extends StatelessWidget {
                           ),
                         ),
                       ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 7, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF4F4F5),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          '4',
-                          style: GoogleFonts.inter(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: const Color(0xFF52525B),
+                      if (_savedCount > 0) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF4F4F5),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '$_savedCount',
+                            style: GoogleFonts.inter(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF52525B),
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
+                        const SizedBox(width: 8),
+                      ],
                       const Icon(CupertinoIcons.chevron_right,
                           size: 14, color: Color(0xFF71717A)),
                     ],
@@ -423,10 +551,10 @@ class DashboardSidebarDrawer extends StatelessWidget {
 
               // Recent Trips
               GestureDetector(
-                onTap: () => _handleRecentTrips(context),
+                onTap: _handleRecentTrips,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 11),
                   child: Row(
                     children: [
                       const Icon(CupertinoIcons.compass,
@@ -442,12 +570,16 @@ class DashboardSidebarDrawer extends StatelessWidget {
                           ),
                         ),
                       ),
-                      Text(
-                        'Lab 302B',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: const Color(0xFF71717A),
+                      Flexible(
+                        child: Text(
+                          recentSubtitle,
+                          style: GoogleFonts.inter(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: const Color(0xFF71717A),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -475,8 +607,8 @@ class DashboardSidebarDrawer extends StatelessWidget {
               GestureDetector(
                 onTap: () {
                   Navigator.pop(context);
-                  if (onOpenAdminStudio != null) {
-                    onOpenAdminStudio!();
+                  if (widget.onOpenAdminStudio != null) {
+                    widget.onOpenAdminStudio!();
                   } else {
                     Navigator.push(
                       context,
@@ -518,7 +650,7 @@ class DashboardSidebarDrawer extends StatelessWidget {
                             width: 12,
                             height: 12,
                             decoration: BoxDecoration(
-                              color: isAdminMode
+                              color: widget.isAdminMode
                                   ? Colors.white
                                   : const Color(0xFF3F3F46),
                               shape: BoxShape.circle,
@@ -556,11 +688,12 @@ class DashboardSidebarDrawer extends StatelessWidget {
               ),
 
               const SizedBox(height: 24),
-              const Divider(height: 24, thickness: 1, color: Color(0xFFF4F4F5)),
+              const Divider(
+                  height: 24, thickness: 1, color: Color(0xFFF4F4F5)),
 
               // Preferences
               GestureDetector(
-                onTap: () => _handlePreferences(context),
+                onTap: _handlePreferences,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Row(
@@ -583,13 +716,15 @@ class DashboardSidebarDrawer extends StatelessWidget {
 
               // ARCore Diagnostics
               GestureDetector(
-                onTap: () => _handleDiagnostics(context),
+                onTap: _handleDiagnostics,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Row(
                     children: [
-                      const Icon(CupertinoIcons.antenna_radiowaves_left_right,
-                          size: 18, color: Color(0xFF52525B)),
+                      const Icon(
+                          CupertinoIcons.antenna_radiowaves_left_right,
+                          size: 18,
+                          color: Color(0xFF52525B)),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Text(
@@ -616,7 +751,7 @@ class DashboardSidebarDrawer extends StatelessWidget {
 
               // Help & Feedback
               GestureDetector(
-                onTap: () => _handleHelp(context),
+                onTap: _handleHelp,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Row(
