@@ -81,7 +81,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
                   children: [
                     osmTileLayer(),
                     if (_gps != null)
-                      MarkerLayer(markers: [Marker(point: _gps!, width: 20, height: 20, child: userLocationDot())]),
+                      MarkerLayer(markers: [Marker(point: _gps!, width: 72, height: 72, child: userLocationDot())]),
                     osmAttribution(),
                   ],
                 ),

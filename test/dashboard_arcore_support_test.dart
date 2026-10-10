@@ -7,14 +7,28 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const channel = MethodChannel('mapx/arcore');
+  const geolocatorChannel =
+      MethodChannel('flutter.baseflow.com/geolocator');
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    // No location services in widget tests: answer promptly so the
+    // header's location loader hides and pumpAndSettle() can settle.
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(geolocatorChannel,
+            (MethodCall methodCall) async {
+      if (methodCall.method == 'isLocationServiceEnabled') {
+        return false;
+      }
+      return null;
+    });
   });
 
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(geolocatorChannel, null);
   });
 
   testWidgets('Does not show blocking dialog when ARCore is supported',

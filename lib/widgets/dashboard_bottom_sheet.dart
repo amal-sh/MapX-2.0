@@ -118,6 +118,10 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
   @override
   Widget build(BuildContext context) {
     final dashboardState = widget.dashboardState;
+    // Skeleton only on first load when no cached buildings are available
+    // yet. Once entries exist (even while re-syncing), show real content.
+    final bool showSkeleton =
+        dashboardState.isLoading && dashboardState.entries.isEmpty;
 
     return Padding(
       // Floating-card margins so every rounded corner is visible
@@ -136,11 +140,7 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
           borderRadius: BorderRadius.circular(24),
           border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
         ),
-        child: dashboardState.isLoading
-            ? const Center(
-                child: CircularProgressIndicator(color: Colors.black),
-              )
-            : CustomScrollView(
+        child: CustomScrollView(
                 controller: scrollController,
                 slivers: [
                   SliverToBoxAdapter(
@@ -164,13 +164,17 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
                           const SizedBox(height: 14),
                           _buildCategoryFilter(),
                           const SizedBox(height: 20),
-                          _buildDirectoryHeader(dashboardState),
+                          showSkeleton
+                              ? _buildDirectoryHeaderSkeleton()
+                              : _buildDirectoryHeader(dashboardState),
                           const SizedBox(height: 12),
                         ],
                       ),
                     ),
                   ),
-                  _buildComplexesList(dashboardState),
+                  showSkeleton
+                      ? _buildSkeletonList()
+                      : _buildComplexesList(dashboardState),
                   const SliverToBoxAdapter(
                     child: SizedBox(height: 24),
                   ),
@@ -297,6 +301,33 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildDirectoryHeaderSkeleton() {
+    return const _Pulse(
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _SkeletonBox(width: 120, height: 11, radius: 6),
+          _SkeletonBox(width: 130, height: 12, radius: 6),
+        ],
+      ),
+    );
+  }
+
+  /// Placeholder cards shown only while the first load has no cached
+  /// buildings yet. Mirrors [_buildRealBuildingCard] layout so there is
+  /// no layout shift when real data arrives.
+  Widget _buildSkeletonList() {
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      sliver: SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) => const _SkeletonBuildingCard(),
+          childCount: 3,
+        ),
+      ),
     );
   }
 
@@ -683,6 +714,133 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SkeletonBox extends StatelessWidget {
+  final double width;
+  final double height;
+  final double radius;
+
+  const _SkeletonBox({
+    required this.width,
+    required this.height,
+    this.radius = 6,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F4F5),
+        borderRadius: BorderRadius.circular(radius),
+      ),
+    );
+  }
+}
+
+/// Soft opacity pulse so static skeleton boxes feel alive without
+/// adding a shimmer dependency.
+class _Pulse extends StatefulWidget {
+  final Widget child;
+
+  const _Pulse({required this.child});
+
+  @override
+  State<_Pulse> createState() => _PulseState();
+}
+
+class _PulseState extends State<_Pulse>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat(reverse: true);
+    _opacity = Tween<double>(begin: 0.45, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(opacity: _opacity, child: widget.child);
+  }
+}
+
+/// Skeleton mirroring [_buildRealBuildingCard] dimensions: 44px icon,
+/// two title lines, divider, and floor chips.
+class _SkeletonBuildingCard extends StatelessWidget {
+  const _SkeletonBuildingCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: const _Pulse(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _SkeletonBox(width: 44, height: 44, radius: 12),
+                SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _SkeletonBox(width: 160, height: 14, radius: 7),
+                      SizedBox(height: 8),
+                      _SkeletonBox(width: 120, height: 11, radius: 6),
+                    ],
+                  ),
+                ),
+                _SkeletonBox(width: 16, height: 16, radius: 8),
+              ],
+            ),
+            SizedBox(height: 14),
+            Divider(height: 1, thickness: 1, color: Color(0xFFF4F4F5)),
+            SizedBox(height: 12),
+            Row(
+              children: [
+                _SkeletonBox(width: 36, height: 12, radius: 6),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _SkeletonBox(width: 38, height: 24, radius: 6),
+                      _SkeletonBox(width: 38, height: 24, radius: 6),
+                      _SkeletonBox(width: 38, height: 24, radius: 6),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

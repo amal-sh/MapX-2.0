@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -47,9 +46,28 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
 
   GeoPoint? _userGps;
 
+  /// True while the initial GPS fix is being fetched. Drives the circular
+  /// loader floating over the map.
+  bool _locating = true;
+
   final _previewMap = MapController();
   final _sheetController = DraggableScrollableController();
-  bool _previewCentered = false;
+
+  /// Set once flutter_map reports readiness; moves issued before this are
+  /// silently dropped on mobile, so pending targets wait for it.
+  bool _mapReady = false;
+
+  /// True once the user manually pans/zooms the preview; delayed
+  /// re-applies never fight an intentional gesture.
+  bool _userInteracted = false;
+
+  /// Last target successfully shifted into the visible region.
+  LatLng? _appliedCenter;
+
+  /// Newest target waiting for the map to be ready / laid out.
+  LatLng? _pendingTarget;
+
+  static const double _previewZoom = 16;
 
   /// Live sheet height as a fraction of the body. Tracked (without
   /// setState) so map centering can target the uncovered region.
@@ -74,13 +92,17 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   }
 
   Future<void> _requestInitialLocationPermission() async {
-    final granted = await LocationService.instance.requestPermission();
-    if (granted && mounted) {
-      final loc = await LocationService.instance.getCurrentLocation();
-      if (loc != null && mounted) {
-        setState(() => _userGps = (loc.latitude, loc.longitude));
-        ref.read(dashboardProvider.notifier).loadMaps();
+    try {
+      final granted = await LocationService.instance.requestPermission();
+      if (granted && mounted) {
+        final loc = await LocationService.instance.getCurrentLocation();
+        if (loc != null && mounted) {
+          setState(() => _userGps = (loc.latitude, loc.longitude));
+          ref.read(dashboardProvider.notifier).loadMaps();
+        }
       }
+    } finally {
+      if (mounted) setState(() => _locating = false);
     }
   }
 
@@ -188,32 +210,63 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
     );
   }
 
-  void _maybeRecenterPreview(DashboardState state) {
-    if (_previewCentered) return;
+  void _ensurePreviewCentered(DashboardState state) {
     final target = _resolvePreviewTarget(state);
     if (target == null) return;
-    _previewCentered = true;
+    // Skip rebuilds on the same spot, but DO recenter when a better fix
+    // arrives (e.g. buildings-mean first, live GPS second).
+    if (_appliedCenter != null) {
+      final moved = const Distance().distance(_appliedCenter!, target);
+      if (moved < 25) return;
+    }
+    if (_pendingTarget != null) {
+      final pendingMoved = const Distance().distance(_pendingTarget!, target);
+      if (pendingMoved < 25 && _appliedCenter == null) {
+        if (!_mapReady) return;
+      }
+    }
+    _pendingTarget = target;
+    if (!_mapReady) return;
+    _applyPendingCenter();
+  }
+
+  void _applyPendingCenter() {
+    final target = _pendingTarget;
+    if (target == null || !_mapReady) return;
+    _pendingTarget = null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _centerOn(target, 16);
+      _centerOn(target, _previewZoom);
+      _appliedCenter = target;
+      // Mobile layout settles late (sheet snap, first tiles): one delayed
+      // re-apply so the dot reliably ends in the visible region center.
+      Future.delayed(const Duration(milliseconds: 350), () {
+        if (!mounted || _userInteracted) return;
+        if (_appliedCenter == target && _pendingTarget == null) {
+          _centerOn(target, _previewZoom);
+        }
+      });
     });
   }
 
   /// Moves the map so [target] lands at the center of the *visible*
-  /// region (the body area above the bottom sheet), not the exact
-  /// screen center which the sheet covers.
+  /// region (the body area between the floating header and the bottom
+  /// sheet), not the exact screen center which the sheet covers.
   void _centerOn(LatLng target, double zoom) {
     try {
+      if (!_mapReady) return;
       final camera = _previewMap.camera;
       final world = camera.projectAtZoom(target, zoom);
       final media = MediaQuery.of(context);
-      // Floating glass header (~52px pill + 8px margin) replaces kToolbarHeight.
+      // Floating header (~52px pill + 8px margin) replaces kToolbarHeight.
       const floatingHeaderHeight = 68.0;
-      final bodyHeight = media.size.height -
-          media.padding.top -
-          floatingHeaderHeight;
-      final shifted =
-          world + Offset(0, _sheetFraction * bodyHeight / 2);
+      // DraggableScrollableSheet fractions are relative to the full screen
+      // height, so the covered height ~= fraction * screen height.
+      final sheetHeightPx = _sheetFraction * media.size.height;
+      final shiftPx =
+          (sheetHeightPx - media.padding.top - floatingHeaderHeight) / 2;
+      final shift = shiftPx < 0 ? 0.0 : shiftPx;
+      final shifted = world + Offset(0, shift);
       _previewMap.move(camera.unprojectAtZoom(shifted, zoom), zoom);
     } catch (_) {}
   }
@@ -221,7 +274,30 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   void _openFullOutdoorMap() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const OutdoorMapScreen()),
+      // Scale + fade makes the Hero's map-continuity read as an expand
+      // (the Hero keeps the tiles continuous while the page scales
+      // from 0.96 to full). Hero still shrinks back on pop.
+      PageRouteBuilder<void>(
+        transitionDuration: const Duration(milliseconds: 450),
+        reverseTransitionDuration: const Duration(milliseconds: 350),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const OutdoorMapScreen(),
+        transitionsBuilder:
+            (context, animation, secondaryAnimation, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInOut,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.96, end: 1.0).animate(curved),
+              child: child,
+            ),
+          );
+        },
+      ),
     );
     if (mounted) ref.read(dashboardProvider.notifier).loadMaps();
   }
@@ -249,7 +325,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
         : (basemapPref == UserPreferencesService.basemapStandard
             ? BasemapTheme.standard
             : BasemapTheme.dark);
-    _maybeRecenterPreview(dashboardState);
+    _ensurePreviewCentered(dashboardState);
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -258,59 +334,84 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
       body: Stack(
         children: [
           // Outdoor preview map with user-selected basemap theme.
+          // Wrapped in a Hero matching OutdoorMapScreen.heroTag so the
+          // preview visually expands into the full map on push (and
+          // shrinks back on pop).
           Positioned.fill(
-            child: FlutterMap(
-              mapController: _previewMap,
-              options: MapOptions(
-                initialCenter: _resolvePreviewTarget(dashboardState) ??
-                    _fallbackCenter(),
-                initialZoom:
-                    (_userGps != null || dashboardState.buildingLocations.isNotEmpty)
-                        ? 16
-                        : 4,
-                maxZoom: 20,
-                backgroundColor: isDark
-                    ? const Color(0xFF080E18)
-                    : const Color(0xFFF4F4F5),
-              ),
-              children: [
-                basemapTileLayer(basemapTheme),
-                MarkerLayer(
-                  markers: [
-                    for (final entry
-                        in dashboardState.buildingLocations.entries)
-                      Marker(
-                        point: LatLng(
-                            entry.value.latitude, entry.value.longitude),
-                        width: 150,
-                        height: 70,
-                        alignment: Alignment.topCenter,
-                        child: GestureDetector(
-                          onTap: () {
-                            final floors = dashboardState
-                                    .groupedByBuilding[entry.key] ??
-                                const <BuildingMapEntry>[];
-                            if (floors.isNotEmpty) {
-                              _openPreviewBuilding(entry.key, floors);
-                            }
-                          },
-                          child: _PreviewBuildingPin(name: entry.key),
-                        ),
+            child: Hero(
+              tag: OutdoorMapScreen.heroTag,
+              // ClipRect keeps tiles inside the flight bounds while the
+              // hero expands between routes.
+              child: ClipRect(
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: FlutterMap(
+                    mapController: _previewMap,
+                    options: MapOptions(
+                      initialCenter:
+                          _resolvePreviewTarget(dashboardState) ??
+                              _fallbackCenter(),
+                      initialZoom: (_userGps != null ||
+                              dashboardState
+                                  .buildingLocations.isNotEmpty)
+                          ? 16
+                          : 4,
+                      maxZoom: 20,
+                      backgroundColor: isDark
+                          ? const Color(0xFF080E18)
+                          : const Color(0xFFF4F4F5),
+                      onMapReady: () {
+                        _mapReady = true;
+                        _applyPendingCenter();
+                      },
+                      onPositionChanged: (_, hasGesture) {
+                        if (hasGesture) _userInteracted = true;
+                      },
+                    ),
+                    children: [
+                      basemapTileLayer(basemapTheme),
+                      MarkerLayer(
+                        markers: [
+                          for (final entry in dashboardState
+                              .buildingLocations.entries)
+                            Marker(
+                              point: LatLng(entry.value.latitude,
+                                  entry.value.longitude),
+                              width: 150,
+                              height: 70,
+                              alignment: Alignment.topCenter,
+                              child: GestureDetector(
+                                onTap: () {
+                                  final floors = dashboardState
+                                          .groupedByBuilding[entry.key] ??
+                                      const <BuildingMapEntry>[];
+                                  if (floors.isNotEmpty) {
+                                    _openPreviewBuilding(
+                                        entry.key, floors);
+                                  }
+                                },
+                                child: _PreviewBuildingPin(
+                                    name: entry.key),
+                              ),
+                            ),
+                          if (_userGps != null)
+                            Marker(
+                              point:
+                                  LatLng(_userGps!.$1, _userGps!.$2),
+                              width: 72,
+                              height: 72,
+                              child: userLocationDot(dark: isDark),
+                            ),
+                        ],
                       ),
-                    if (_userGps != null)
-                      Marker(
-                        point: LatLng(_userGps!.$1, _userGps!.$2),
-                        width: 72,
-                        height: 72,
-                        child: userLocationDot(dark: isDark),
-                      ),
-                  ],
+                      osmAttribution(),
+                    ],
+                  ),
                 ),
-                osmAttribution(),
-              ],
+              ),
             ),
           ),
-          // Floating glassmorphic header: separate circular buttons +
+          // Floating header: separate circular buttons +
           // rounded center pill, all floating over the map.
           Positioned(
             top: 0,
@@ -351,6 +452,49 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
               ),
             ),
           ),
+          // Circular loader floating over the map while the initial GPS
+          // fix is being fetched. Centered in the visible band between
+          // the header and the bottom sheet.
+          if (_locating)
+            Positioned(
+              top: 140,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: Semantics(
+                    label: 'Finding your location',
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.white,
+                        border: Border.fromBorderSide(
+                          BorderSide(
+                              color: Color(0xFFE4E4E7), width: 1),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.all(14),
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            key: ValueKey(
+                                'location-loading-indicator'),
+                            strokeWidth: 3,
+                            backgroundColor: Color(0xFFF4F4F5),
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(
+                                    Colors.black),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           // Directory content lives in a moveable bottom sheet covering
           // most of the screen.
           DashboardBottomSheet(
@@ -365,8 +509,8 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
 
 }
 
-/// Separate circular floating glass button for the dashboard header.
-/// Monochrome frosted glass: heavy blur + white gradient, black icon.
+/// Separate circular floating button for the dashboard header.
+/// Plain white background with a 1px zinc border, black icon.
 class _GlassCircleButton extends StatelessWidget {
   final IconData icon;
   final String tooltip;
@@ -380,85 +524,43 @@ class _GlassCircleButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipOval(
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-        child: Container(
-          width: 52,
-          height: 52,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: 0.85),
-                Colors.white.withValues(alpha: 0.55),
-              ],
-            ),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.65),
-              width: 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.12),
-                blurRadius: 20,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Stack(
-            children: [
-              // Top sheen for a frosted-glass highlight.
-              Positioned(
-                top: 6,
-                left: 14,
-                right: 14,
-                child: Container(
-                  height: 10,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.white.withValues(alpha: 0.55),
-                        Colors.white.withValues(alpha: 0.0),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              Material(
-                color: Colors.transparent,
-                shape: const CircleBorder(),
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: onPressed,
-                  child: Tooltip(
-                    message: tooltip,
-                    child: const SizedBox(
-                      width: 52,
-                      height: 52,
-                    ),
-                  ),
-                ),
-              ),
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: Icon(icon, color: Colors.black, size: 22),
-                ),
-              ),
-            ],
-          ),
+    return Container(
+      width: 52,
+      height: 52,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.white,
+        border: Border.fromBorderSide(
+          BorderSide(color: Color(0xFFE4E4E7), width: 1),
         ),
+      ),
+      child: Stack(
+        children: [
+          Material(
+            color: Colors.transparent,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onPressed,
+              child: Tooltip(
+                message: tooltip,
+                child: const SizedBox(width: 52, height: 52),
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Icon(icon, color: Colors.black, size: 22),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-/// Floating perfectly-rounded (stadium) frosted-glass pill for the banner.
+/// Floating perfectly-rounded (stadium) pill for the banner.
+/// Plain white background with a 1px zinc border.
 class _GlassPill extends StatelessWidget {
   final Widget child;
 
@@ -468,65 +570,17 @@ class _GlassPill extends StatelessWidget {
   Widget build(BuildContext context) {
     // 52px tall -> 26px radius = fully rounded ends regardless of width.
     const radius = BorderRadius.all(Radius.circular(26));
-    return ClipRRect(
-      borderRadius: radius,
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-        child: Container(
-          height: 52,
-          alignment: Alignment.center,
-          decoration: const BoxDecoration(
-            borderRadius: radius,
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color.fromRGBO(255, 255, 255, 0.85),
-                Color.fromRGBO(255, 255, 255, 0.55),
-              ],
-            ),
-            border: Border.fromBorderSide(
-              BorderSide(
-                color: Color.fromRGBO(255, 255, 255, 0.65),
-                width: 1.2,
-              ),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Color.fromRGBO(0, 0, 0, 0.12),
-                blurRadius: 20,
-                offset: Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              // Top sheen for a frosted-glass highlight.
-              Positioned(
-                top: 5,
-                left: 28,
-                right: 28,
-                child: Container(
-                  height: 12,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Color.fromRGBO(255, 255, 255, 0.55),
-                        Color.fromRGBO(255, 255, 255, 0.0),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              child,
-            ],
-          ),
+    return Container(
+      height: 52,
+      alignment: Alignment.center,
+      decoration: const BoxDecoration(
+        borderRadius: radius,
+        color: Colors.white,
+        border: Border.fromBorderSide(
+          BorderSide(color: Color(0xFFE4E4E7), width: 1),
         ),
       ),
+      child: child,
     );
   }
 }

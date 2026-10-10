@@ -85,6 +85,11 @@ Widget osmAttribution() => const RichAttributionWidget(
 /// The live "you are here" dot. Inverts with the basemap theme so it
 /// always reads: black dot on light, white dot on dark — with a soft
 /// white radial halo around it on dark so it glows on dark basemaps.
+///
+/// Always returns a fixed 72x72 box with a centered 20px dot so the
+/// visual size never depends on the parent [Marker] width/height
+/// (flutter_map stretches the child to fill the marker box, which made
+/// the light-theme dot balloon to 72px).
 Widget userLocationDot({bool dark = false}) {
   final dot = Container(
     width: 20,
@@ -101,24 +106,24 @@ Widget userLocationDot({bool dark = false}) {
       ],
     ),
   );
-  if (!dark) return dot;
   return SizedBox(
     width: 72,
     height: 72,
     child: Stack(
       alignment: Alignment.center,
       children: [
-        Container(
-          width: 72,
-          height: 72,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: RadialGradient(
-              colors: [Color(0x2EFFFFFF), Color(0x00FFFFFF)],
-              stops: [0.35, 1.0],
+        if (dark)
+          Container(
+            width: 72,
+            height: 72,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [Color(0x2EFFFFFF), Color(0x00FFFFFF)],
+                stops: [0.35, 1.0],
+              ),
             ),
           ),
-        ),
         dot,
       ],
     ),
