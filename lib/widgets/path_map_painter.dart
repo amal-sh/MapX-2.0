@@ -146,26 +146,62 @@ class PathMapPainter extends CustomPainter {
             Paint()..color = Colors.black,
           );
           canvas.drawRect(Rect.fromCenter(center: pos, width: 7, height: 7), Paint()..color = Colors.white);
-          _paintLabel(canvas, wp.displayName, pos + const Offset(10, -10), Colors.black);
+          _paintBadge(canvas, wp.displayName, pos + const Offset(10, -10));
         } else {
-          canvas.drawCircle(pos, 8, Paint()..color = Colors.black);
-          canvas.drawCircle(pos, 4, Paint()..color = Colors.white);
-          _paintLabel(canvas, wp.label, pos + const Offset(10, -10), Colors.black);
+          final isStartWp = routeNodes != null &&
+              routeNodes!.isNotEmpty &&
+              (node.east - routeNodes!.first.east).abs() < 0.05 &&
+              (node.north - routeNodes!.first.north).abs() < 0.05;
+          final isEndWp = routeNodes != null &&
+              routeNodes!.isNotEmpty &&
+              (node.east - routeNodes!.last.east).abs() < 0.05 &&
+              (node.north - routeNodes!.last.north).abs() < 0.05;
+
+          if (isStartWp) {
+            canvas.drawCircle(pos, 8, Paint()..color = Colors.black);
+            canvas.drawCircle(pos, 5, Paint()..color = Colors.white);
+            canvas.drawCircle(pos, 2.5, Paint()..color = Colors.black);
+            _paintBadge(canvas, wp.label, pos + const Offset(10, 8), hasDot: true);
+          } else if (isEndWp) {
+            canvas.drawCircle(pos, 9, Paint()..color = Colors.black);
+            canvas.drawCircle(pos, 5, Paint()..color = Colors.white);
+            canvas.drawCircle(pos, 2.5, Paint()..color = Colors.black);
+            _paintBadge(canvas, '🚩 End', pos + const Offset(12, -12), isBlack: true);
+          } else {
+            canvas.drawCircle(pos, 6, Paint()..color = Colors.black);
+            canvas.drawCircle(pos, 4, Paint()..color = Colors.white);
+            _paintBadge(canvas, wp.label, pos + const Offset(8, -10));
+          }
         }
       }
     }
 
-    // Start node: High contrast concentric indicator
-    final startPos = toScreen(nodes.first.east, nodes.first.north);
-    canvas.drawCircle(startPos, 7, Paint()..color = Colors.black);
-    canvas.drawCircle(startPos, 4, Paint()..color = Colors.white);
-    canvas.drawCircle(startPos, 2, Paint()..color = Colors.black);
+    // Start node indicator if no start waypoint already drew one
+    if (routeNodes != null && routeNodes!.isNotEmpty) {
+      final rStart = routeNodes!.first;
+      final rStartPos = toScreen(rStart.east, rStart.north);
+      canvas.drawCircle(rStartPos, 8, Paint()..color = Colors.black);
+      canvas.drawCircle(rStartPos, 5, Paint()..color = Colors.white);
+      canvas.drawCircle(rStartPos, 2.5, Paint()..color = Colors.black);
 
-    final end = nodes[(walkEnd ?? nodes.length - 1).clamp(0, nodes.length - 1)];
-    if (nodes.length > 1) {
-      final endPos = toScreen(end.east, end.north);
-      canvas.drawCircle(endPos, 7, Paint()..color = Colors.black);
-      canvas.drawCircle(endPos, 3, Paint()..color = Colors.white);
+      final rEnd = routeNodes!.last;
+      final rEndPos = toScreen(rEnd.east, rEnd.north);
+      canvas.drawCircle(rEndPos, 9, Paint()..color = Colors.black);
+      canvas.drawCircle(rEndPos, 5, Paint()..color = Colors.white);
+      canvas.drawCircle(rEndPos, 2.5, Paint()..color = Colors.black);
+      _paintBadge(canvas, '🚩 End', rEndPos + const Offset(12, -12), isBlack: true);
+    } else {
+      final startPos = toScreen(nodes.first.east, nodes.first.north);
+      canvas.drawCircle(startPos, 7, Paint()..color = Colors.black);
+      canvas.drawCircle(startPos, 4, Paint()..color = Colors.white);
+      canvas.drawCircle(startPos, 2, Paint()..color = Colors.black);
+
+      final end = nodes[(walkEnd ?? nodes.length - 1).clamp(0, nodes.length - 1)];
+      if (nodes.length > 1) {
+        final endPos = toScreen(end.east, end.north);
+        canvas.drawCircle(endPos, 7, Paint()..color = Colors.black);
+        canvas.drawCircle(endPos, 3, Paint()..color = Colors.white);
+      }
     }
 
     _paintNorthArrow(canvas, size);
@@ -177,7 +213,7 @@ class PathMapPainter extends CustomPainter {
     final halfNorth = size.height / 2 / scale;
     final step = (max(halfEast, halfNorth) * 2) > 20 ? 5.0 : 1.0;
     final paint = Paint()
-      ..color = const Color(0xFFE4E4E7)
+      ..color = const Color(0xFFF0F0F3)
       ..strokeWidth = 1;
 
     for (var e = ((centreEast - halfEast) / step).ceil() * step;
@@ -192,36 +228,72 @@ class PathMapPainter extends CustomPainter {
       final y = toScreen(centreEast, n).dy;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
     }
-
-    _paintLabel(canvas, '${step.toStringAsFixed(0)} m grid',
-        Offset(6, size.height - 18), const Color(0xFF71717A));
   }
 
-  void _paintNorthArrow(Canvas canvas, Size size) {
-    final top = Offset(size.width - 20, 12);
-    final bottom = Offset(size.width - 20, 34);
-    final paint = Paint()
-      ..color = Colors.black
-      ..strokeWidth = 2;
-    canvas.drawLine(bottom, top, paint);
-    canvas.drawLine(top, top + const Offset(-5, 7), paint);
-    canvas.drawLine(top, top + const Offset(5, 7), paint);
-    _paintLabel(canvas, 'N', Offset(size.width - 25, 36), Colors.black);
-  }
-
-  void _paintLabel(Canvas canvas, String text, Offset at, Color color) {
-    final painter = TextPainter(
+  void _paintBadge(
+    Canvas canvas,
+    String text,
+    Offset at, {
+    bool isBlack = false,
+    bool hasDot = false,
+  }) {
+    final tp = TextPainter(
       text: TextSpan(
         text: text,
         style: TextStyle(
-          color: color,
+          color: isBlack ? Colors.white : const Color(0xFF18181B),
           fontSize: 11,
           fontWeight: FontWeight.w600,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    painter.paint(canvas, at);
+
+    final dotWidth = hasDot ? 12.0 : 0.0;
+    const padH = 6.0;
+    const padV = 3.0;
+    final width = tp.width + padH * 2 + dotWidth;
+    final height = tp.height + padV * 2;
+    final rect = Rect.fromLTWH(at.dx, at.dy, width, height);
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(5));
+
+    if (isBlack) {
+      canvas.drawRRect(rrect, Paint()..color = const Color(0xFF09090B));
+    } else {
+      canvas.drawRRect(
+        rrect.shift(const Offset(0, 1)),
+        Paint()..color = Colors.black.withValues(alpha: 0.05),
+      );
+      canvas.drawRRect(rrect, Paint()..color = Colors.white);
+      canvas.drawRRect(
+        rrect,
+        Paint()
+          ..color = const Color(0xFFE4E4E7)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+    }
+
+    if (hasDot) {
+      canvas.drawCircle(
+        Offset(at.dx + padH + 3.0, at.dy + height / 2),
+        3.0,
+        Paint()..color = isBlack ? Colors.white : Colors.black,
+      );
+    }
+
+    tp.paint(canvas, Offset(at.dx + padH + dotWidth, at.dy + padV));
+  }
+
+  void _paintNorthArrow(Canvas canvas, Size size) {
+    final top = Offset(size.width - 20, 12);
+    final bottom = Offset(size.width - 20, 34);
+    final paint = Paint()
+      ..color = const Color(0xFF71717A)
+      ..strokeWidth = 1.5;
+    canvas.drawLine(bottom, top, paint);
+    canvas.drawLine(top, top + const Offset(-4, 6), paint);
+    canvas.drawLine(top, top + const Offset(4, 6), paint);
   }
 
   @override

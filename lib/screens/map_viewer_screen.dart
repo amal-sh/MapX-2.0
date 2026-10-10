@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logic/depth_occlusion_manager.dart';
@@ -24,7 +25,6 @@ import '../widgets/navigation/ar_world_scanner_overlay.dart';
 import '../widgets/navigation/off_path_direction_prompt.dart';
 import '../widgets/path_map_painter.dart';
 import '../services/campus_repository.dart';
-import 'map_editor_screen.dart';
 import 'outdoor_navigation_screen.dart';
 
 class MapViewerScreen extends StatefulWidget {
@@ -80,6 +80,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   bool _isArMode = false;
   bool _useArCore = true;
   static const platform = MethodChannel('mapx/arcore');
+  final TransformationController _mapTransformController = TransformationController();
 
   late final AnimationController _pulseController;
   SpatialSensorFusion? _fusionEngine;
@@ -160,6 +161,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     _fusionSub?.cancel();
     _fusionEngine?.dispose();
     _pulseController.dispose();
+    _mapTransformController.dispose();
     super.dispose();
   }
 
@@ -844,21 +846,6 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     );
   }
 
-  Future<void> _openEditor() async {
-    final floor = _floors[_currentFloor];
-    if (floor == null) return;
-    final title = floor.building == null ? widget.mapName : '${floor.building} · Floor ${floor.floor}';
-    final saved = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => MapEditorScreen(mapKey: floor.key, title: title)),
-    );
-    if (saved == true && mounted) {
-      final building = _building;
-      await _loadMapData();
-      if (mounted) setState(() => _showBuilding(building, floor.floor));
-    }
-  }
-
   /// Under the pickers for a trip that changes floor or building: the
   /// lift/stairs choice and the planned route, or why there isn't one.
   Widget _buildTripSummary() {
@@ -911,6 +898,299 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
               ],
             )
           : summary,
+    );
+  }
+
+  void _zoomIn() {
+    final matrix = _mapTransformController.value.clone();
+    matrix.scaleByDouble(1.25, 1.25, 1.0, 1.0);
+    _mapTransformController.value = matrix;
+  }
+
+  void _zoomOut() {
+    final matrix = _mapTransformController.value.clone();
+    matrix.scaleByDouble(0.8, 0.8, 1.0, 1.0);
+    _mapTransformController.value = matrix;
+  }
+
+  void _resetView() {
+    _mapTransformController.value = Matrix4.identity();
+  }
+
+  void _showPlacePickerSheet({required bool isStart}) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        String searchQuery = '';
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final places = _allPlaces.where((p) {
+              if (searchQuery.isEmpty) return true;
+              final q = searchQuery.toLowerCase();
+              return p.displayName.toLowerCase().contains(q) ||
+                  p.building.toLowerCase().contains(q) ||
+                  p.label.toLowerCase().contains(q);
+            }).toList();
+
+            return SafeArea(
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height * 0.65,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE4E4E7),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              isStart ? 'Select Origin' : 'Select Destination',
+                              style: GoogleFonts.inter(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.black,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(CupertinoIcons.xmark, size: 20),
+                            onPressed: () => Navigator.of(context).pop(),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        decoration: InputDecoration(
+                          hintText: 'Search rooms, labs, stairs...',
+                          hintStyle: GoogleFonts.inter(color: const Color(0xFFA1A1AA), fontSize: 14),
+                          prefixIcon: const Icon(CupertinoIcons.search, size: 18, color: Color(0xFF71717A)),
+                          filled: true,
+                          fillColor: const Color(0xFFF4F4F5),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: Color(0xFFE4E4E7)),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: Color(0xFFE4E4E7)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: Colors.black),
+                          ),
+                        ),
+                        onChanged: (val) {
+                          setSheetState(() => searchQuery = val);
+                        },
+                      ),
+                      const SizedBox(height: 14),
+                      Expanded(
+                        child: places.isEmpty
+                            ? Center(
+                                child: Text(
+                                  'No locations found',
+                                  style: GoogleFonts.inter(color: const Color(0xFF71717A), fontSize: 14),
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: places.length,
+                                separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFFF4F4F5)),
+                                itemBuilder: (context, idx) {
+                                  final place = places[idx];
+                                  final isSelected = isStart ? (_startLocation == place) : (_destination == place);
+                                  return ListTile(
+                                    contentPadding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                                    leading: Container(
+                                      width: 38,
+                                      height: 38,
+                                      decoration: BoxDecoration(
+                                        color: isSelected ? Colors.black : const Color(0xFFF4F4F5),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Icon(
+                                        place.place.isConnector
+                                            ? (place.place.category == Waypoint.liftCategory
+                                                ? Icons.elevator_outlined
+                                                : Icons.stairs_outlined)
+                                            : CupertinoIcons.placemark,
+                                        size: 18,
+                                        color: isSelected ? Colors.white : const Color(0xFF27272A),
+                                      ),
+                                    ),
+                                    title: Text(
+                                      place.displayName,
+                                      style: GoogleFonts.inter(
+                                        fontSize: 15,
+                                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
+                                        color: Colors.black,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      _placeName(place),
+                                      style: GoogleFonts.inter(fontSize: 12, color: const Color(0xFF71717A)),
+                                    ),
+                                    trailing: isSelected
+                                        ? const Icon(CupertinoIcons.checkmark, size: 18, color: Colors.black)
+                                        : null,
+                                    onTap: () {
+                                      Navigator.of(context).pop();
+                                      setState(() {
+                                        if (isStart) {
+                                          _startLocation = place;
+                                          _showBuilding(place.building, place.floor);
+                                        } else {
+                                          _destination = place;
+                                        }
+                                      });
+                                    },
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showRouteOptionsSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE4E4E7),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Route & Accessibility Options',
+                          style: GoogleFonts.inter(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(CupertinoIcons.xmark, size: 20),
+                          onPressed: () => Navigator.of(context).pop(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Vertical Connector Preference',
+                      style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: const Color(0xFF71717A)),
+                    ),
+                    const SizedBox(height: 10),
+                    SegmentedButton<bool>(
+                      segments: const [
+                        ButtonSegment(
+                          value: true,
+                          label: Text('Elevator / Lift'),
+                          icon: Icon(Icons.elevator_outlined, size: 18),
+                        ),
+                        ButtonSegment(
+                          value: false,
+                          label: Text('Stairs'),
+                          icon: Icon(Icons.stairs_outlined, size: 18),
+                        ),
+                      ],
+                      selected: {_preferLift},
+                      showSelectedIcon: false,
+                      style: ButtonStyle(
+                        backgroundColor: WidgetStateProperty.resolveWith((states) {
+                          if (states.contains(WidgetState.selected)) return Colors.black;
+                          return const Color(0xFFF4F4F5);
+                        }),
+                        foregroundColor: WidgetStateProperty.resolveWith((states) {
+                          if (states.contains(WidgetState.selected)) return Colors.white;
+                          return const Color(0xFF18181B);
+                        }),
+                      ),
+                      onSelectionChanged: (s) {
+                        setSheetState(() {});
+                        setState(() => _preferLift = s.first);
+                      },
+                    ),
+                    if (_startLocation != null &&
+                        _destination != null &&
+                        (_startLocation!.building != _destination!.building ||
+                            _startLocation!.floor != _destination!.floor)) ...[
+                      const SizedBox(height: 16),
+                      _buildTripSummary(),
+                    ],
+                    const SizedBox(height: 20),
+                    const Divider(height: 1, color: Color(0xFFE4E4E7)),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.black,
+                          side: const BorderSide(color: Color(0xFFE4E4E7)),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _startSensorArNavigation();
+                        },
+                        icon: const Icon(CupertinoIcons.videocam, size: 18),
+                        label: Text('Sensor AR Navigation (without ARCore)', style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -1227,131 +1507,366 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
       );
     }
 
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          leading: Container(
+            margin: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFFE4E4E7)),
+            ),
+            child: IconButton(
+              padding: EdgeInsets.zero,
+              icon: const Icon(CupertinoIcons.chevron_left, size: 18, color: Colors.black),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          title: Text(
+            'Route Overview',
+            style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 17, color: Colors.black),
+          ),
+        ),
+        body: const Center(child: CircularProgressIndicator(color: Colors.black)),
+      );
+    }
+
     final nodes = _computedNodes;
+    final floorsList = _floors.keys.toList()..sort((a, b) => b.compareTo(a));
+    final calculatedSteps = _stepCount > 0 ? _stepCount : max(1, (_pathLength / 0.65).round());
+
     return Scaffold(
-      floatingActionButton: _isLoading || _floors[_currentFloor] == null
-          ? null
-          : Padding(
-              // Clear the Start AR Navigation button below the map.
-              padding: const EdgeInsets.only(bottom: 76),
-              child: FloatingActionButton(
-                heroTag: 'edit_map',
-                backgroundColor: Colors.black,
-                foregroundColor: Colors.white,
-                tooltip: 'Edit map',
-                onPressed: _openEditor,
-                child: const Icon(Icons.edit_outlined),
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            // Top Navigation Bar
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFFE4E4E7)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(CupertinoIcons.chevron_left, size: 18, color: Colors.black),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Text(
+                          'Route Overview',
+                          style: GoogleFonts.inter(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _building.isNotEmpty
+                              ? '${_building.toUpperCase()} • FLOOR $_currentFloor'
+                              : widget.mapName.toUpperCase(),
+                          style: GoogleFonts.inter(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0.6,
+                            color: const Color(0xFF71717A),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFFE4E4E7)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(CupertinoIcons.slider_horizontal_3, size: 18, color: Colors.black),
+                      tooltip: 'Route options',
+                      onPressed: _showRouteOptionsSheet,
+                    ),
+                  ),
+                ],
               ),
             ),
-      appBar: AppBar(
-        leading: CupertinoNavigationBarBackButton(
-          color: Colors.black,
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: Text(_building.isEmpty ? widget.mapName : '$_building · Floor $_currentFloor'),
-        actions: [
-          IconButton(
-            icon: const Icon(CupertinoIcons.videocam),
-            tooltip: 'AR Navigation (without ARCore)',
-            onPressed: _startSensorArNavigation,
-          )
-        ],
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.black))
-          : Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                  width: double.infinity,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFFAFAFA),
-                    border: Border(bottom: BorderSide(color: Color(0xFFE4E4E7))),
+
+            // Route Origin & Destination Card
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFE4E4E7)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.02),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                ],
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _Stat(label: 'Steps', value: '$_stepCount'),
-                      Container(width: 1, height: 24, color: const Color(0xFFE4E4E7)),
-                      _Stat(label: 'Nodes', value: '${nodes.length}'),
-                      Container(width: 1, height: 24, color: const Color(0xFFE4E4E7)),
-                      _Stat(label: 'Distance', value: '${_pathLength.toStringAsFixed(1)}m'),
-                      Container(width: 1, height: 24, color: const Color(0xFFE4E4E7)),
-                      _Stat(label: 'Floor', value: '$_currentFloor'),
-                    ],
-                  ),
-                ),
-                if (_allPlaces.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    decoration: const BoxDecoration(
-                      color: Colors.white,
-                      border: Border(bottom: BorderSide(color: Color(0xFFE4E4E7))),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+                      // Left vertical connector line
+                      Column(
+                        children: [
+                          const SizedBox(height: 5),
+                          Container(
+                            width: 10,
+                            height: 10,
+                            decoration: const BoxDecoration(
+                              color: Colors.black,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          Container(
+                            width: 1.5,
+                            height: 38,
+                            color: const Color(0xFFD4D4D8),
+                          ),
+                          const Icon(
+                            CupertinoIcons.location,
+                            size: 16,
+                            color: Colors.black,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
                           children: [
-                            Expanded(
-                              child: DropdownButtonFormField<_Place>(
-                                key: ValueKey(('start', _startLocation)),
-                                isExpanded: true,
-                                decoration: const InputDecoration(labelText: 'Start'),
-                                initialValue: _startLocation,
-                                items: _allPlaces
-                                    .map((w) => DropdownMenuItem(value: w, child: Text(_placeName(w), overflow: TextOverflow.ellipsis)))
-                                    .toList(),
-                                onChanged: (val) => setState(() {
-                                  _startLocation = val;
-                                  if (val != null) _showBuilding(val.building, val.floor);
-                                }),
+                            // Origin
+                            InkWell(
+                              onTap: () => _showPlacePickerSheet(isStart: true),
+                              borderRadius: BorderRadius.circular(8),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Origin',
+                                          style: GoogleFonts.inter(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w500,
+                                            color: const Color(0xFF71717A),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          _startLocation?.displayName ?? _startLocation?.label ?? 'Select start',
+                                          style: GoogleFonts.inter(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.black,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF4F4F5),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: const Color(0xFFE4E4E7)),
+                                    ),
+                                    child: Text(
+                                      'F${_startLocation?.floor ?? _currentFloor}',
+                                      style: GoogleFonts.inter(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: const Color(0xFF71717A),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: DropdownButtonFormField<_Place>(
-                                key: ValueKey(('dest', _destination)),
-                                isExpanded: true,
-                                decoration: const InputDecoration(labelText: 'Destination'),
-                                initialValue: _destination,
-                                items: _allPlaces
-                                    .map((w) => DropdownMenuItem(value: w, child: Text(_placeName(w), overflow: TextOverflow.ellipsis)))
-                                    .toList(),
-                                onChanged: (val) => setState(() => _destination = val),
+                            const SizedBox(height: 12),
+                            // Destination
+                            InkWell(
+                              onTap: () => _showPlacePickerSheet(isStart: false),
+                              borderRadius: BorderRadius.circular(8),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Destination',
+                                          style: GoogleFonts.inter(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w500,
+                                            color: const Color(0xFF71717A),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          _destination?.displayName ?? _destination?.label ?? 'Select destination',
+                                          style: GoogleFonts.inter(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w700,
+                                            color: Colors.black,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3.5),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      'Level ${_destination?.floor ?? _currentFloor}',
+                                      style: GoogleFonts.inter(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: const Color(0xFFFDE047),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
                         ),
-                        if (_startLocation != null &&
-                            _destination != null &&
-                            (_startLocation!.building != _destination!.building ||
-                                _startLocation!.floor != _destination!.floor))
-                          _buildTripSummary(),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                if (_floors.length > 1)
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                  const SizedBox(height: 14),
+                  // Metrics chip row
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFAFAFA),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xFFE4E4E7)),
+                    ),
                     child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
-                        for (final f in (_floors.keys.toList()..sort()))
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              label: Text('Floor $f'),
-                              selected: f == _currentFloor,
-                              onSelected: (_) => setState(() => _showFloor(f)),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.directions_walk, size: 14, color: Color(0xFF27272A)),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$calculatedSteps steps',
+                              style: GoogleFonts.inter(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: const Color(0xFF27272A),
+                              ),
                             ),
-                          ),
+                          ],
+                        ),
+                        Text('·', style: GoogleFonts.inter(color: const Color(0xFFA1A1AA), fontWeight: FontWeight.bold)),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(CupertinoIcons.circle_grid_hex, size: 13, color: Color(0xFF27272A)),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${_routeNodes?.length ?? nodes.length} Nodes',
+                              style: GoogleFonts.inter(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: const Color(0xFF27272A),
+                              ),
+                            ),
+                          ],
+                        ),
+                        Text('·', style: GoogleFonts.inter(color: const Color(0xFFA1A1AA), fontWeight: FontWeight.bold)),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.straighten, size: 13, color: Color(0xFF27272A)),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${_pathLength.toStringAsFixed(1)} m',
+                              style: GoogleFonts.inter(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: const Color(0xFF27272A),
+                              ),
+                            ),
+                          ],
+                        ),
+                        Text('·', style: GoogleFonts.inter(color: const Color(0xFFA1A1AA), fontWeight: FontWeight.bold)),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(CupertinoIcons.square_stack_3d_up, size: 13, color: Color(0xFF27272A)),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Level ${_destination?.floor ?? _currentFloor}',
+                              style: GoogleFonts.inter(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: const Color(0xFF27272A),
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
-                Expanded(
-                  child: InteractiveViewer(
-                    boundaryMargin: const EdgeInsets.all(40),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // 2D Map Canvas
+            Expanded(
+              child: Stack(
+                children: [
+                  InteractiveViewer(
+                    transformationController: _mapTransformController,
+                    boundaryMargin: const EdgeInsets.all(60),
                     minScale: 0.1,
                     maxScale: 8.0,
                     child: CustomPaint(
@@ -1366,42 +1881,348 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                       child: Container(),
                     ),
                   ),
-                ),
-                SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: ElevatedButton.icon(
+
+                  // Bottom-left 1m grid indicator
+                  Positioned(
+                    left: 16,
+                    bottom: 16,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFE4E4E7)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.04),
+                            blurRadius: 4,
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(width: 14, height: 2, color: const Color(0xFF71717A)),
+                          const SizedBox(width: 6),
+                          Text(
+                            '1 m grid',
+                            style: GoogleFonts.inter(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF71717A),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Left vertical floor selector
+                  if (floorsList.isNotEmpty)
+                    Positioned(
+                      left: 16,
+                      top: 16,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: const Color(0xFFE4E4E7)),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.06),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            for (final f in floorsList)
+                              Padding(
+                                padding: const EdgeInsets.all(3),
+                                child: InkWell(
+                                  onTap: () => setState(() => _showFloor(f)),
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Container(
+                                    width: 34,
+                                    height: 34,
+                                    decoration: BoxDecoration(
+                                      color: f == _currentFloor ? Colors.black : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      'F$f',
+                                      style: GoogleFonts.inter(
+                                        color: f == _currentFloor ? Colors.white : const Color(0xFF71717A),
+                                        fontWeight: f == _currentFloor ? FontWeight.w700 : FontWeight.w600,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Right floating controls (Compass, Zoom in/out, Recenter FAB)
+                  Positioned(
+                    right: 16,
+                    bottom: 16,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Compass North button
+                        InkWell(
+                          onTap: _resetView,
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            width: 38,
+                            height: 38,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: const Color(0xFFE4E4E7)),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.05),
+                                  blurRadius: 6,
+                                ),
+                              ],
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  'N',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
+                                    color: const Color(0xFF27272A),
+                                  ),
+                                ),
+                                const Icon(CupertinoIcons.arrow_up, size: 9, color: Color(0xFF27272A)),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+
+                        // Zoom in / out pill
+                        Container(
+                          width: 38,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(19),
+                            border: Border.all(color: const Color(0xFFE4E4E7)),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.05),
+                                blurRadius: 6,
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            children: [
+                              InkWell(
+                                onTap: _zoomIn,
+                                borderRadius: const BorderRadius.vertical(top: Radius.circular(19)),
+                                child: Container(
+                                  height: 36,
+                                  alignment: Alignment.center,
+                                  child: const Icon(CupertinoIcons.plus, size: 16, color: Color(0xFF27272A)),
+                                ),
+                              ),
+                              const Divider(height: 1, thickness: 1, color: Color(0xFFE4E4E7)),
+                              InkWell(
+                                onTap: _zoomOut,
+                                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(19)),
+                                child: Container(
+                                  height: 36,
+                                  alignment: Alignment.center,
+                                  child: const Icon(CupertinoIcons.minus, size: 16, color: Color(0xFF27272A)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+
+                        // Recenter FAB
+                        InkWell(
+                          onTap: _resetView,
+                          borderRadius: BorderRadius.circular(22),
+                          child: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: Colors.black,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.25),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(CupertinoIcons.location_fill, size: 18, color: Colors.white),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Bottom Navigation Card & AR Start
+            Container(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, MediaQuery.of(context).padding.bottom + 12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                border: const Border(top: BorderSide(color: Color(0xFFE4E4E7))),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 12,
+                    offset: const Offset(0, -3),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Turn instruction row
+                  Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF4F4F5),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFE4E4E7)),
+                        ),
+                        child: Icon(
+                          _turnInstructions.isNotEmpty && _turnInstructions.first.angleDeltaDeg < 0
+                              ? CupertinoIcons.arrow_turn_up_left
+                              : CupertinoIcons.arrow_turn_up_right,
+                          size: 18,
+                          color: Colors.black,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _turnInstructions.isNotEmpty
+                                  ? _turnInstructions.first.label
+                                  : (_hasNextLeg
+                                      ? 'Take connector to next floor'
+                                      : 'Follow path to destination'),
+                              style: GoogleFonts.inter(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'In ${_pathLength > 0 ? _pathLength.toStringAsFixed(0) : "12"} meters',
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                color: const Color(0xFF71717A),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Text(
+                        '$calculatedSteps steps',
+                        style: GoogleFonts.inter(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+
+                  // Start AR Navigation Button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 54,
+                    child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.black,
                         foregroundColor: Colors.white,
-                        minimumSize: const Size(double.infinity, 52),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        elevation: 0,
                       ),
-                      onPressed: _canStartNavigation ? _startArNavigation : null,
-                      icon: const Icon(CupertinoIcons.location_north_fill, size: 18),
-                      label: const Text('Start AR Navigation', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                      onPressed: _canStartNavigation
+                          ? _startArNavigation
+                          : () => _showPlacePickerSheet(isStart: _startLocation == null),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(CupertinoIcons.viewfinder, size: 20, color: Colors.white),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Start AR Navigation',
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const Icon(CupertinoIcons.arrow_up_right, size: 16, color: Colors.white),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 8),
+
+                  // Accessible route options text link
+                  InkWell(
+                    onTap: _showRouteOptionsSheet,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Accessible route options',
+                            style: GoogleFonts.inter(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: const Color(0xFF71717A),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const Icon(CupertinoIcons.slider_horizontal_3, size: 14, color: Color(0xFF71717A)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-    );
-  }
-}
-
-class _Stat extends StatelessWidget {
-  final String label;
-  final String value;
-  const _Stat({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(value, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17, color: Colors.black)),
-        const SizedBox(height: 2),
-        Text(label, style: const TextStyle(color: Color(0xFF71717A), fontSize: 11, fontWeight: FontWeight.w500)),
-      ],
+          ],
+        ),
+      ),
     );
   }
 }

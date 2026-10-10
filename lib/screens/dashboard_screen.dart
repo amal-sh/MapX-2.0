@@ -1,16 +1,18 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+import '../logic/geo_math.dart';
+import '../models/campus_models.dart';
 import '../providers/dashboard_providers.dart';
-import '../services/firestore_service.dart';
 import '../services/location_service.dart';
+import '../widgets/dashboard_sidebar_drawer.dart';
+import 'admin_studio_screen.dart';
 import 'campus_map_screen.dart';
-import 'mapping_screen.dart';
 import 'map_viewer_screen.dart';
 import 'search_screen.dart';
 
@@ -19,8 +21,6 @@ class DashboardScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // If an ancestor ProviderScope exists, use child directly.
-    // If not (e.g. isolated test without ProviderScope), wrap with ProviderScope.
     Widget content = const _DashboardScreenContent();
     try {
       ProviderScope.containerOf(context, listen: false);
@@ -35,13 +35,57 @@ class _DashboardScreenContent extends ConsumerStatefulWidget {
   const _DashboardScreenContent();
 
   @override
-  ConsumerState<_DashboardScreenContent> createState() => _DashboardScreenState();
+  ConsumerState<_DashboardScreenContent> createState() =>
+      _DashboardScreenState();
 }
 
 class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   static const _methodChannel = MethodChannel('mapx/arcore');
 
   bool _isDeviceSupported = true;
+  String _selectedCategory = 'All';
+  GeoPoint? _userGps;
+
+  final List<String> _categories = const [
+    'All',
+    'Classrooms',
+    'Restrooms',
+    'Elevators',
+    'Labs',
+    'Offices',
+    'Dining',
+  ];
+
+  static const _sampleComplexes = [
+    _CampusDirectoryComplex(
+      name: 'Science & Engineering Complex',
+      subtitle: '80m away · Live GPS calibrated',
+      floors: ['L1', 'L2', 'L3', 'L4'],
+      icon: CupertinoIcons.building_2_fill,
+      distanceMeters: 80,
+    ),
+    _CampusDirectoryComplex(
+      name: 'Innovation & Computing Hub',
+      subtitle: '140m away · High accuracy indoor mesh',
+      floors: ['B1', 'L1', 'L2', 'L3'],
+      icon: Icons.memory,
+      distanceMeters: 140,
+    ),
+    _CampusDirectoryComplex(
+      name: 'Student Center & Dining Pavilion',
+      subtitle: '210m away',
+      floors: ['L1', 'L2'],
+      icon: Icons.local_cafe_outlined,
+      distanceMeters: 210,
+    ),
+    _CampusDirectoryComplex(
+      name: 'Central Library & Learning Commons',
+      subtitle: '350m away',
+      floors: ['L1', 'L2', 'L3', 'L4', 'L5'],
+      icon: CupertinoIcons.book_fill,
+      distanceMeters: 350,
+    ),
+  ];
 
   @override
   void initState() {
@@ -55,6 +99,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
     if (granted && mounted) {
       final loc = await LocationService.instance.getCurrentLocation();
       if (loc != null && mounted) {
+        setState(() => _userGps = (loc.latitude, loc.longitude));
         ref.read(dashboardProvider.notifier).loadMaps();
       }
     }
@@ -64,7 +109,6 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
     try {
       final availability =
           await _methodChannel.invokeMethod<String>('checkAvailability');
-      // ARCore is only operational and supported if availability is SUPPORTED_INSTALLED.
       if (availability != 'SUPPORTED_INSTALLED') {
         if (!mounted) return;
         setState(() => _isDeviceSupported = false);
@@ -75,8 +119,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
         });
       }
     } on MissingPluginException {
-      // In testing environments or platforms without the plugin registered,
-      // do not block unless mocked.
+      // Platform or tests without plugin: do not block unless mocked.
     } on PlatformException {
       if (!mounted) return;
       setState(() => _isDeviceSupported = false);
@@ -141,7 +184,8 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
                 ),
               ),
               onPressed: () => SystemNavigator.pop(),
-              child: const Text('Exit App', style: TextStyle(fontWeight: FontWeight.w600)),
+              child: const Text('Exit App',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
             ),
           ],
         ),
@@ -149,89 +193,35 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
     );
   }
 
-  Future<void> _startNewMap() async {
-    if (!_isDeviceSupported) {
-      _showUnsupportedDeviceDialog();
-      return;
-    }
-    final details = await showDialog<({String name, int floor})>(
-      context: context,
-      builder: (_) => _NewMapDialog(
-        exists: ref.read(dashboardProvider.notifier).exists,
-      ),
-    );
-    if (details == null || !mounted) return;
-
-    // Show immediate feedback while acquiring GPS
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-            ),
-            SizedBox(width: 12),
-            Text('Acquiring building GPS coordinates...'),
-          ],
-        ),
-        duration: Duration(seconds: 2),
-      ),
-    );
-
-    final location = await LocationService.instance.getCurrentLocation();
-    if (location != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('building_gps_${details.name}', jsonEncode(location.toJson()));
-
-      unawaited(FirestoreService.instance.saveBuilding(
-        buildingName: details.name,
-        location: location,
-        initialFloor: details.floor,
-      ));
-    }
-
-    await _openMapping(details, location: location);
+  String _formatFloorName(int? floor) {
+    if (floor == null) return 'L1';
+    if (floor < 0) return 'B${floor.abs()}';
+    if (floor == 0) return 'L0';
+    return 'L$floor';
   }
 
-  Future<void> _addFloor(String building) async {
-    if (!_isDeviceSupported) {
-      _showUnsupportedDeviceDialog();
-      return;
+  IconData _iconForBuilding(String name) {
+    final lower = name.toLowerCase();
+    if (lower.contains('tech') ||
+        lower.contains('comput') ||
+        lower.contains('innov') ||
+        lower.contains('hub') ||
+        lower.contains('lab')) {
+      return Icons.memory;
     }
-    final details = await showDialog<({String name, int floor})>(
-      context: context,
-      builder: (_) => _AddFloorDialog(
-        building: building,
-        exists: ref.read(dashboardProvider.notifier).exists,
-      ),
-    );
-    if (details == null || !mounted) return;
-
-    final dashboardState = ref.read(dashboardProvider);
-    BuildingLocation? location = dashboardState.buildingLocations[building];
-    location ??= await LocationService.instance.getCurrentLocation();
-
-    await _openMapping(details, location: location);
-  }
-
-  Future<void> _openMapping(({String name, int floor})? details, {BuildingLocation? location}) async {
-    if (details == null || !mounted) return;
-
-    final saved = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => MappingScreen(
-          mapName: details.name,
-          floor: details.floor,
-          location: location,
-        ),
-      ),
-    );
-    if (saved == true) {
-      ref.read(dashboardProvider.notifier).loadMaps();
+    if (lower.contains('din') ||
+        lower.contains('cafe') ||
+        lower.contains('food') ||
+        lower.contains('center') ||
+        lower.contains('student')) {
+      return Icons.local_cafe_outlined;
     }
+    if (lower.contains('lib') ||
+        lower.contains('learn') ||
+        lower.contains('book')) {
+      return CupertinoIcons.book_fill;
+    }
+    return CupertinoIcons.building_2_fill;
   }
 
   @override
@@ -239,95 +229,253 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
     final dashboardState = ref.watch(dashboardProvider);
 
     return Scaffold(
+      backgroundColor: Colors.white,
+      drawer: const DashboardSidebarDrawer(),
       appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        leading: Builder(
+          builder: (scaffoldContext) => IconButton(
+            icon: const Icon(CupertinoIcons.bars, color: Colors.black, size: 22),
+            tooltip: 'Menu',
+            onPressed: () => Scaffold.of(scaffoldContext).openDrawer(),
+          ),
+        ),
         title: Image.asset(
           'assets/images/transp_banner.png',
-          height: 52,
+          height: 26,
           fit: BoxFit.contain,
         ),
         centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(CupertinoIcons.map, color: Colors.black),
+            icon: const Icon(
+              CupertinoIcons.paperplane,
+              color: Colors.black,
+              size: 21,
+            ),
             tooltip: 'Campus map',
             onPressed: () async {
-              await Navigator.push(context, MaterialPageRoute(builder: (_) => const CampusMapScreen()));
-              if (mounted) ref.read(dashboardProvider.notifier).loadMaps();
-            },
-          ),
-          IconButton(
-            icon: const Icon(CupertinoIcons.search, color: Colors.black),
-            tooltip: 'Search',
-            onPressed: () {
-              Navigator.push(
+              await Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const SearchScreen()),
+                MaterialPageRoute(builder: (_) => const CampusMapScreen()),
               );
+              if (mounted) ref.read(dashboardProvider.notifier).loadMaps();
             },
           ),
         ],
       ),
       body: dashboardState.isLoading
           ? const Center(child: CircularProgressIndicator(color: Colors.black))
-          : dashboardState.entries.isEmpty
-              ? _buildEmptyState()
-              : _buildMapList(dashboardState),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _startNewMap,
-        icon: const Icon(CupertinoIcons.add),
-        label: const Text('New Map'),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: const BoxDecoration(
-              color: Color(0xFFF4F4F5),
-              shape: BoxShape.circle,
+          : Stack(
+              children: [
+                CustomScrollView(
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildSearchBar(),
+                            const SizedBox(height: 14),
+                            _buildCategoryFilter(),
+                            const SizedBox(height: 20),
+                            _buildDirectoryHeader(dashboardState),
+                            const SizedBox(height: 12),
+                          ],
+                        ),
+                      ),
+                    ),
+                    _buildComplexesList(dashboardState),
+                    const SliverToBoxAdapter(
+                      child: SizedBox(height: 72),
+                    ),
+                  ],
+                ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 16,
+                  child: Center(
+                    child: _buildCompassPill(),
+                  ),
+                ),
+              ],
             ),
-            child: const Icon(CupertinoIcons.map, size: 64, color: Color(0xFF71717A)),
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'No maps found',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Colors.black),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Tap "New Map" to start mapping your space.',
-            style: TextStyle(color: Color(0xFF71717A), fontSize: 14),
-          ),
-        ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const SearchScreen()),
+        );
+      },
+      child: Container(
+        height: 48,
+        decoration: BoxDecoration(
+          color: const Color(0xFFF4F4F5),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          children: [
+            const Icon(
+              CupertinoIcons.search,
+              color: Color(0xFF71717A),
+              size: 20,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Search rooms, labs, stairs, restrooms...',
+                style: GoogleFonts.inter(
+                  color: const Color(0xFF71717A),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w400,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildMapList(DashboardState dashboardState) {
-    final buildings = dashboardState.groupedByBuilding.entries.toList();
-
-    return ListView.builder(
-      // Bottom padding clears the floating New Map button.
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
-      itemCount: buildings.length,
-      itemBuilder: (context, index) => _buildBuildingCard(
-        buildings[index].key,
-        buildings[index].value,
-        dashboardState.buildingLocations,
+  Widget _buildCategoryFilter() {
+    return SizedBox(
+      height: 38,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: _categories.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final cat = _categories[index];
+          final isSelected = cat == _selectedCategory;
+          return GestureDetector(
+            onTap: () {
+              setState(() => _selectedCategory = cat);
+              if (cat != 'All') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SearchScreen()),
+                );
+              }
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.black : Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color:
+                      isSelected ? Colors.black : const Color(0xFFE4E4E7),
+                  width: 1,
+                ),
+              ),
+              child: Center(
+                child: Text(
+                  cat,
+                  style: GoogleFonts.inter(
+                    color: isSelected ? Colors.white : const Color(0xFF18181B),
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
 
-  Widget _buildBuildingCard(
+  Widget _buildDirectoryHeader(DashboardState dashboardState) {
+    final count = dashboardState.entries.isNotEmpty
+        ? dashboardState.groupedByBuilding.length
+        : _sampleComplexes.length;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          'CAMPUS DIRECTORY',
+          style: GoogleFonts.inter(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: const Color(0xFF71717A),
+            letterSpacing: 0.8,
+          ),
+        ),
+        Text(
+          '$count Complexes Near You',
+          style: GoogleFonts.inter(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: const Color(0xFF71717A),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildComplexesList(DashboardState dashboardState) {
+    if (dashboardState.entries.isNotEmpty) {
+      final buildings = dashboardState.groupedByBuilding.entries.toList();
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              final building = buildings[index];
+              return _buildRealBuildingCard(
+                building.key,
+                building.value,
+                dashboardState.buildingLocations,
+              );
+            },
+            childCount: buildings.length,
+          ),
+        ),
+      );
+    }
+
+    // Default campus directory complexes matching Image 1
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      sliver: SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) {
+            final complex = _sampleComplexes[index];
+            return _buildSampleComplexCard(complex);
+          },
+          childCount: _sampleComplexes.length,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRealBuildingCard(
     String name,
     List<BuildingMapEntry> floors,
     Map<String, BuildingLocation> locations,
   ) {
+    final location = locations[name];
+    String subtitle = 'High accuracy indoor mesh';
+    if (_userGps != null && location != null) {
+      final dist = haversineMeters(_userGps!, (location.latitude, location.longitude));
+      subtitle = '${dist.round()}m away · Live GPS calibrated';
+    } else if (location != null) {
+      subtitle = 'Live GPS calibrated';
+    }
+
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
@@ -335,257 +483,353 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
       ),
+      padding: const EdgeInsets.all(16),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            leading: Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                color: Colors.black,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Icon(CupertinoIcons.building_2_fill, color: Colors.white, size: 22),
-            ),
-            title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17, color: Colors.black)),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  floors.length == 1 ? '1 floor' : '${floors.length} floors',
-                  style: const TextStyle(color: Color(0xFF71717A), fontSize: 13),
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF4F4F5),
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                if (locations.containsKey(name))
-                  Padding(
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(CupertinoIcons.location_solid, size: 12, color: Color(0xFF16A34A)),
-                        const SizedBox(width: 4),
-                        Text(
-                          '${locations[name]!.latitude.toStringAsFixed(5)}, ${locations[name]!.longitude.toStringAsFixed(5)}',
-                          style: const TextStyle(
-                            color: Color(0xFF52525B),
-                            fontSize: 11,
-                            fontFamily: 'monospace',
+                child: Icon(
+                  _iconForBuilding(name),
+                  color: const Color(0xFF18181B),
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                        color: Colors.black,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        color: const Color(0xFF71717A),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              GestureDetector(
+                onTap: () {
+                  if (floors.isNotEmpty) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => MapViewerScreen(
+                          mapKey: floors.first.key,
+                          mapName: floors.first.title,
+                        ),
+                      ),
+                    );
+                  }
+                },
+                child: const Icon(
+                  CupertinoIcons.chevron_right,
+                  size: 16,
+                  color: Color(0xFF71717A),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Divider(height: 1, thickness: 1, color: Color(0xFFF4F4F5)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Text(
+                'Floors',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: const Color(0xFF71717A),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final entry in floors)
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => MapViewerScreen(
+                                mapKey: entry.key,
+                                mapName: entry.title,
+                              ),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAFAFA),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                                color: const Color(0xFFE4E4E7), width: 1),
+                          ),
+                          child: Text(
+                            _formatFloorName(entry.floor),
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF18181B),
+                            ),
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          for (final entry in floors)
-            ListTile(
-              dense: true,
-              contentPadding: const EdgeInsets.only(left: 24, right: 12),
-              leading: const Icon(CupertinoIcons.square_stack_3d_up, color: Color(0xFF18181B), size: 18),
-              title: Text(
-                entry.floor == null ? 'No floor set' : 'Floor ${entry.floor}',
-                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Colors.black),
+                      ),
+                  ],
+                ),
               ),
-              subtitle: const Text('Tap to open map', style: TextStyle(color: Color(0xFF71717A), fontSize: 12)),
-              trailing: IconButton(
-                icon: const Icon(CupertinoIcons.trash, color: Color(0xFF71717A), size: 18),
-                onPressed: () => _confirmDelete(entry),
-              ),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => MapViewerScreen(mapKey: entry.key, mapName: entry.title),
-                  ),
-                );
-              },
-            ),
-          const Divider(height: 1),
-          ListTile(
-            dense: true,
-            contentPadding: const EdgeInsets.only(left: 24, right: 12),
-            leading: const Icon(CupertinoIcons.plus_circle, color: Colors.black, size: 18),
-            title: const Text(
-              'Add Floor',
-              style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600, fontSize: 13),
-            ),
-            onTap: () => _addFloor(name),
+            ],
           ),
         ],
       ),
     );
   }
 
-  void _confirmDelete(BuildingMapEntry entry) {
-    showDialog(
+  Widget _buildSampleComplexCard(_CampusDirectoryComplex complex) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF4F4F5),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  complex.icon,
+                  color: const Color(0xFF18181B),
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      complex.name,
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                        color: Colors.black,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      complex.subtitle,
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        color: const Color(0xFF71717A),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              GestureDetector(
+                onTap: () => _onSampleFloorTap(complex.name, complex.floors.first),
+                child: const Icon(
+                  CupertinoIcons.chevron_right,
+                  size: 16,
+                  color: Color(0xFF71717A),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Divider(height: 1, thickness: 1, color: Color(0xFFF4F4F5)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Text(
+                'Floors',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: const Color(0xFF71717A),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final floor in complex.floors)
+                      GestureDetector(
+                        onTap: () => _onSampleFloorTap(complex.name, floor),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAFAFA),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                                color: const Color(0xFFE4E4E7), width: 1),
+                          ),
+                          child: Text(
+                            floor,
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF18181B),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _onSampleFloorTap(String buildingName, String floorLabel) {
+    showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Map?'),
-        content: Text('Are you sure you want to delete "${entry.title}"?'),
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          '$buildingName • $floorLabel',
+          style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 16),
+        ),
+        content: Text(
+          'This floor space is in the campus directory. Admin floor recording, CAD modeling, and link management are located in MapX Studio.',
+          style: GoogleFonts.inter(
+            fontSize: 13,
+            color: const Color(0xFF52525B),
+            height: 1.4,
+          ),
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'Close',
+              style: GoogleFonts.inter(
+                color: const Color(0xFF71717A),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ),
-          TextButton(
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
             onPressed: () {
-              Navigator.pop(context);
-              ref.read(dashboardProvider.notifier).deleteMap(entry.key);
+              Navigator.pop(ctx);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AdminStudioScreen()),
+              );
             },
-            child: const Text('Delete', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            child: Text(
+              'Open MapX Studio',
+              style: GoogleFonts.inter(fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
     );
   }
-}
 
-/// Asks for the map's name and floor number before the mapping page opens.
-class _NewMapDialog extends StatefulWidget {
-  final bool Function(String name, int floor) exists;
-  const _NewMapDialog({required this.exists});
-
-  @override
-  State<_NewMapDialog> createState() => _NewMapDialogState();
-}
-
-class _NewMapDialogState extends State<_NewMapDialog> {
-  final _nameController = TextEditingController();
-  final _floorController = TextEditingController();
-  String? _nameError;
-  String? _floorError;
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _floorController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final name = _nameController.text.trim();
-    final floor = int.tryParse(_floorController.text.trim());
-    setState(() {
-      _nameError = name.isEmpty ? 'Enter a map name' : null;
-      _floorError = floor == null
-          ? 'Enter a floor number'
-          : (name.isNotEmpty && widget.exists(name, floor))
-              ? 'Floor $floor of "$name" already exists'
-              : null;
-    });
-    if (_nameError == null && _floorError == null) {
-      Navigator.pop(context, (name: name, floor: floor!));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('New Map'),
-      content: Column(
+  Widget _buildCompassPill() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F4F5),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
+      ),
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          TextField(
-            controller: _nameController,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            textInputAction: TextInputAction.next,
-            decoration: InputDecoration(
-              labelText: 'Map name',
-              hintText: 'e.g., Home',
-              errorText: _nameError,
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: _isDeviceSupported
+                  ? const Color(0xFF71717A)
+                  : const Color(0xFFA1A1AA),
+              shape: BoxShape.circle,
             ),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _floorController,
-            keyboardType: const TextInputType.numberWithOptions(signed: true),
-            textInputAction: TextInputAction.done,
-            onSubmitted: (_) => _submit(),
-            decoration: InputDecoration(
-              labelText: 'Floor number',
-              hintText: '0 = ground floor',
-              errorText: _floorError,
+          const SizedBox(width: 8),
+          Text(
+            'Indoor Compass Calibrated',
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: const Color(0xFF52525B),
             ),
           ),
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: _submit,
-          child: const Text('Continue'),
-        ),
-      ],
     );
   }
 }
 
-/// Asks for a new floor number to add to [building].
-class _AddFloorDialog extends StatefulWidget {
-  final String building;
-  final bool Function(String name, int floor) exists;
-  const _AddFloorDialog({required this.building, required this.exists});
+class _CampusDirectoryComplex {
+  final String name;
+  final String subtitle;
+  final List<String> floors;
+  final IconData icon;
+  final double distanceMeters;
 
-  @override
-  State<_AddFloorDialog> createState() => _AddFloorDialogState();
-}
-
-class _AddFloorDialogState extends State<_AddFloorDialog> {
-  final _floorController = TextEditingController();
-  String? _floorError;
-
-  @override
-  void dispose() {
-    _floorController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final floor = int.tryParse(_floorController.text.trim());
-    setState(() {
-      _floorError = floor == null
-          ? 'Enter a floor number'
-          : widget.exists(widget.building, floor)
-              ? 'Floor $floor already exists'
-              : null;
-    });
-    if (_floorError == null) {
-      Navigator.pop(context, (name: widget.building, floor: floor!));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Add floor to ${widget.building}'),
-      content: TextField(
-        controller: _floorController,
-        autofocus: true,
-        keyboardType: const TextInputType.numberWithOptions(signed: true),
-        textInputAction: TextInputAction.done,
-        onSubmitted: (_) => _submit(),
-        decoration: InputDecoration(
-          labelText: 'Floor number',
-          hintText: 'e.g., 1',
-          errorText: _floorError,
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: _submit,
-          child: const Text('Continue'),
-        ),
-      ],
-    );
-  }
+  const _CampusDirectoryComplex({
+    required this.name,
+    required this.subtitle,
+    required this.floors,
+    required this.icon,
+    required this.distanceMeters,
+  });
 }
