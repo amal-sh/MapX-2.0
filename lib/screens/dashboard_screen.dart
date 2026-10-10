@@ -10,7 +10,9 @@ import 'package:latlong2/latlong.dart';
 
 import '../models/outdoor_models.dart';
 import '../providers/dashboard_providers.dart';
+import '../providers/service_providers.dart';
 import '../services/location_service.dart';
+import '../services/user_preferences_service.dart';
 import '../widgets/dashboard_bottom_sheet.dart';
 import '../widgets/dashboard_sidebar_drawer.dart';
 import '../widgets/osm_layers.dart';
@@ -240,6 +242,13 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   @override
   Widget build(BuildContext context) {
     final dashboardState = ref.watch(dashboardProvider);
+    final basemapPref = ref.watch(basemapPreferenceProvider);
+    final isDark = basemapPref == UserPreferencesService.basemapDark;
+    final basemapTheme = basemapPref == UserPreferencesService.basemapLight
+        ? BasemapTheme.light
+        : (basemapPref == UserPreferencesService.basemapStandard
+            ? BasemapTheme.standard
+            : BasemapTheme.dark);
     _maybeRecenterPreview(dashboardState);
 
     return Scaffold(
@@ -248,7 +257,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
       drawer: const DashboardSidebarDrawer(),
       body: Stack(
         children: [
-          // Outdoor CARTO map directly below the app bar.
+          // Outdoor preview map with user-selected basemap theme.
           Positioned.fill(
             child: FlutterMap(
               mapController: _previewMap,
@@ -260,10 +269,12 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
                         ? 16
                         : 4,
                 maxZoom: 20,
-                backgroundColor: const Color(0xFF18181B),
+                backgroundColor: isDark
+                    ? const Color(0xFF080E18)
+                    : const Color(0xFFF4F4F5),
               ),
               children: [
-                osmTileLayer(dark: true),
+                basemapTileLayer(basemapTheme),
                 MarkerLayer(
                   markers: [
                     for (final entry
@@ -291,7 +302,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
                         point: LatLng(_userGps!.$1, _userGps!.$2),
                         width: 72,
                         height: 72,
-                        child: userLocationDot(dark: true),
+                        child: userLocationDot(dark: isDark),
                       ),
                   ],
                 ),

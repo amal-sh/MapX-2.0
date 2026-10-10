@@ -137,17 +137,38 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                 initialCenter: _ll(_route.first),
                 initialZoom: 18,
                 maxZoom: 20,
+                backgroundColor: const Color(0xFF080E18),
                 onMapReady: () => _mapReady = true,
                 onPositionChanged: (_, hasGesture) {
                   if (hasGesture && _following) setState(() => _following = false);
                 },
               ),
               children: [
-                osmTileLayer(),
+                customDarkTileLayer(),
                 PolylineLayer(
                   polylines: [
-                    if (walked.length > 1) Polyline(points: walked, strokeWidth: 6, color: const Color(0xFF9CA3AF)),
-                    Polyline(points: ahead, strokeWidth: 7, color: const Color(0xFF2563EB)),
+                    if (walked.length > 1)
+                      Polyline(
+                        points: walked,
+                        strokeWidth: 8,
+                        color: const Color(0xFF080E18),
+                      ),
+                    if (walked.length > 1)
+                      Polyline(
+                        points: walked,
+                        strokeWidth: 5,
+                        color: const Color(0xFF52525B),
+                      ),
+                    Polyline(
+                      points: ahead,
+                      strokeWidth: 9,
+                      color: const Color(0xFF080E18),
+                    ),
+                    Polyline(
+                      points: ahead,
+                      strokeWidth: 6,
+                      color: const Color(0xFF3B82F6),
+                    ),
                   ],
                 ),
                 if (here != null && _accuracy != null)
@@ -156,8 +177,8 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                       point: _ll(here),
                       radius: _accuracy!,
                       useRadiusInMeter: true,
-                      color: const Color(0x222563EB),
-                      borderColor: const Color(0x552563EB),
+                      color: const Color(0x223B82F6),
+                      borderColor: const Color(0x553B82F6),
                       borderStrokeWidth: 1,
                     ),
                   ]),
@@ -168,18 +189,28 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                       width: 40,
                       height: 40,
                       alignment: Alignment.topCenter,
-                      child: const Icon(Icons.location_on, size: 40, color: Colors.black),
+                      child: const Icon(Icons.location_on, size: 40, color: Colors.white),
                     ),
                     if (here != null)
                       Marker(
                         point: _ll(here),
-                        width: 26,
-                        height: 26,
+                        width: _course == null ? 72 : 36,
+                        height: _course == null ? 72 : 36,
                         child: _course == null
-                            ? userLocationDot()
+                            ? userLocationDot(dark: true)
                             : Transform.rotate(
                                 angle: _course! * pi / 180,
-                                child: const Icon(Icons.navigation, color: Color(0xFF2563EB), size: 26),
+                                child: Container(
+                                  padding: const EdgeInsets.all(4),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.white,
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(color: Color(0x66000000), blurRadius: 8),
+                                    ],
+                                  ),
+                                  child: const Icon(Icons.navigation, color: Color(0xFF2563EB), size: 22),
+                                ),
                               ),
                       ),
                   ],
@@ -216,8 +247,8 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                 bottom: MediaQuery.of(context).padding.bottom + 96,
                 child: FloatingActionButton.small(
                   heroTag: 'recenter',
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
+                  backgroundColor: const Color(0xFF18181B),
+                  foregroundColor: Colors.white,
                   onPressed: here == null
                       ? null
                       : () {
@@ -233,8 +264,9 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
               bottom: MediaQuery.of(context).padding.bottom + 20,
               child: ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: arrived ? Colors.black : Colors.white,
-                  foregroundColor: arrived ? Colors.white : Colors.black,
+                  backgroundColor: arrived ? Colors.white : const Color(0xFF18181B),
+                  foregroundColor: arrived ? Colors.black : Colors.white,
+                  side: const BorderSide(color: Color(0xFF27272A)),
                   minimumSize: const Size(double.infinity, 54),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   elevation: 4,

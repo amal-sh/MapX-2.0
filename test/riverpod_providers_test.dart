@@ -21,6 +21,17 @@ void main() {
       expect(container.read(locationServiceProvider), isNotNull);
       expect(container.read(searchServiceProvider), isNotNull);
     });
+
+    test('basemapPreferenceProvider defaults to dark and updates state', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      expect(container.read(basemapPreferenceProvider), 'dark');
+      await container.read(basemapPreferenceProvider.notifier).setBasemap('light');
+      expect(container.read(basemapPreferenceProvider), 'light');
+      await container.read(basemapPreferenceProvider.notifier).setBasemap('standard');
+      expect(container.read(basemapPreferenceProvider), 'standard');
+    });
   });
 
   group('DashboardNotifier', () {

@@ -1,97 +1,90 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_map/flutter_map.dart';
 
-/// CARTO monochrome basemap (OSM data) in `light_all` or `dark_all`.
-/// Both keep building footprints and streets readable while staying
-/// grayscale to match the app's monochrome-minimal theme. (`voyager`
-/// was trialled but the key returns fetch errors for that style, so
-/// we're on the `*_all` styles.)
+/// Standard OpenStreetMap tile URL (100% free, no API key or external service needed).
+const String osmStandardUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+/// Color matrix transforming standard OpenStreetMap raster tiles into
+/// a sleek midnight-navy / cool-grey dark theme directly in flutter_map.
 ///
-/// CARTO requires an API key (free up to 5M tile requests/month from
-/// carto.com/basemaps/apikey). Put it in the gitignored `.env` file:
-/// `CARTO_API_KEY=your_key_here` (see `.env.example`).
-/// `--dart-define=CARTO_API_KEY=...` still works as a CI override.
-String get _cartoApiKey {
-  const defined = String.fromEnvironment('CARTO_API_KEY', defaultValue: '');
-  if (defined.isNotEmpty) return defined;
-  try {
-    return dotenv.env['CARTO_API_KEY'] ?? '';
-  } catch (_) {
-    // dotenv not initialized (e.g. widget tests): anonymous CARTO usage.
-    return '';
-  }
-}
+/// Palette achieved:
+/// - Base / Land: #080E18 ~ #0B131E (deep midnight navy)
+/// - Water / Rivers: #1C2735 ~ #202D3B (muted slate blue)
+/// - Arterials: #707785 ~ #7E8592 (clean, crisp cool grey)
+/// - Minor streets: #242C38 ~ #2B3340 (subtle dark slate)
+const List<double> osmCustomDarkMatrix = <double>[
+  -0.45, -0.05, -0.05, 0, 130, // Red
+  -0.05, -0.45, -0.05, 0, 140, // Green
+  -0.05, -0.05, -0.50, 0, 165, // Blue
+  0, 0, 0, 1, 0, // Alpha
+];
 
+/// Matrix for monochrome-minimal light basemap: desaturates standard OSM
+/// tiles into a clean grayscale palette matching the app's minimal theme.
+const List<double> osmMonochromeLightMatrix = <double>[
+  0.2126, 0.7152, 0.0722, 0, 0, // Red
+  0.2126, 0.7152, 0.0722, 0, 0, // Green
+  0.2126, 0.7152, 0.0722, 0, 0, // Blue
+  0, 0, 0, 1, 0, // Alpha
+];
+
+/// Default color matrix for dark mode.
+const List<double> customDarkMapMatrix = osmCustomDarkMatrix;
+
+/// Pure OpenStreetMap tile layer with custom GPU color-filter styling.
+/// Operates 100% with standard OpenStreetMap and zero third-party basemap services.
 TileLayer osmTileLayer({bool dark = false}) => TileLayer(
-      urlTemplate:
-          'https://{s}.basemaps.cartocdn.com/${dark ? 'dark_all' : 'light_all'}/{z}/{x}/{y}{r}.png?key=$_cartoApiKey',
-      subdomains: const ['a', 'b', 'c', 'd'],
-      userAgentPackageName: 'com.example.mapx2',
-      maxNativeZoom: 20,
-    );
+  urlTemplate: osmStandardUrl,
+  userAgentPackageName: 'com.example.mapx2',
+  maxNativeZoom: 19,
+  tileBuilder: (context, tileWidget, tile) => ColorFiltered(
+    colorFilter: ColorFilter.matrix(
+      dark ? osmCustomDarkMatrix : osmMonochromeLightMatrix,
+    ),
+    child: tileWidget,
+  ),
+);
 
-/// Outdoor basemap styles: CARTO monochrome `dark_all` / `light_all`
-/// plus the standard (full-color) OpenStreetMap tiles.
-enum BasemapTheme { dark, light, standard }
+/// Custom midnight-navy tile layer using pure OpenStreetMap tiles
+/// and flutter_map color filtering.
+TileLayer customDarkTileLayer() => osmTileLayer(dark: true);
 
-/// Basemap tile layer for [theme]. `standard` uses the OSM tile servers
-/// directly (no CARTO key needed); dark/light use the CARTO `*_all` styles.
+/// Outdoor basemap styles: custom midnight navy, monochrome light,
+/// or standard full-color OpenStreetMap.
+enum BasemapTheme { customDark, dark, light, standard }
+
+/// Basemap tile layer for [theme]. All themes run on 100% standard OpenStreetMap.
 TileLayer basemapTileLayer(BasemapTheme theme) {
   switch (theme) {
+    case BasemapTheme.customDark:
+    case BasemapTheme.dark:
+      return osmTileLayer(dark: true);
+    case BasemapTheme.light:
+      return osmTileLayer(dark: false);
     case BasemapTheme.standard:
       return TileLayer(
-        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        urlTemplate: osmStandardUrl,
         userAgentPackageName: 'com.example.mapx2',
         maxNativeZoom: 19,
       );
-    case BasemapTheme.light:
-      return osmTileLayer(dark: false);
-    case BasemapTheme.dark:
-      return osmTileLayer(dark: true);
   }
 }
 
-/// Attribution matching [basemapTileLayer]: standard OSM credits only the
-/// OSM contributors, while the CARTO styles additionally credit CARTO.
-Widget basemapAttribution(BasemapTheme theme) {
-  if (theme == BasemapTheme.standard) {
-    return RichAttributionWidget(
-      showFlutterMapAttribution: false,
-      popupBackgroundColor: Colors.white,
-      attributions: [
-        TextSourceAttribution(
-          'OpenStreetMap contributors',
-          prependCopyright: true,
-        ),
-      ],
-    );
-  }
-  return osmAttribution();
-}
+/// Attribution for standard OpenStreetMap tiles.
+Widget basemapAttribution(BasemapTheme theme) => osmAttribution();
 
-/// Attribution OSM (ODbL) + CARTO require on every map using these tiles.
-/// Kept as a tiny ⓘ toggle instead of a permanent banner: the credits live
-/// in its popup. Do not remove — the ODbL license and CARTO terms both
-/// mandate this credit.
+/// Standard OpenStreetMap attribution required by the ODbL license.
 Widget osmAttribution() => const RichAttributionWidget(
-      showFlutterMapAttribution: false,
-      popupBackgroundColor: Colors.white,
-      attributions: [
-        TextSourceAttribution(
-          'OpenStreetMap contributors',
-          prependCopyright: true,
-        ),
-        TextSourceAttribution(
-          'CARTO',
-          prependCopyright: true,
-        ),
-      ],
-    );
+  showFlutterMapAttribution: false,
+  popupBackgroundColor: Colors.white,
+  attributions: [
+    TextSourceAttribution('OpenStreetMap contributors', prependCopyright: true),
+  ],
+);
 
 /// The live "you are here" dot. Inverts with the basemap theme so it
 /// always reads: black dot on light, white dot on dark — with a soft
-/// white radial halo around it on dark so it glows on `dark_all`.
+/// white radial halo around it on dark so it glows on dark basemaps.
 Widget userLocationDot({bool dark = false}) {
   final dot = Container(
     width: 20,
@@ -100,10 +93,11 @@ Widget userLocationDot({bool dark = false}) {
       color: dark ? Colors.white : Colors.black,
       shape: BoxShape.circle,
       border: Border.all(
-          color: dark ? const Color(0xFF18181B) : Colors.white, width: 3),
+        color: dark ? const Color(0xFF18181B) : Colors.white,
+        width: 3,
+      ),
       boxShadow: const [
-        BoxShadow(
-            color: Color(0x8827272A), blurRadius: 10, spreadRadius: 2)
+        BoxShadow(color: Color(0x8827272A), blurRadius: 10, spreadRadius: 2),
       ],
     ),
   );

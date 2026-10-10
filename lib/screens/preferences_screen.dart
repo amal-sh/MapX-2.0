@@ -1,18 +1,20 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../providers/service_providers.dart';
 import '../services/user_preferences_service.dart';
 
 /// Device-only preferences: distance units and the default outdoor
 /// basemap theme. Opened from the sidebar drawer.
-class PreferencesScreen extends StatefulWidget {
+class PreferencesScreen extends ConsumerStatefulWidget {
   const PreferencesScreen({super.key});
 
   @override
-  State<PreferencesScreen> createState() => _PreferencesScreenState();
+  ConsumerState<PreferencesScreen> createState() => _PreferencesScreenState();
 }
 
-class _PreferencesScreenState extends State<PreferencesScreen> {
+class _PreferencesScreenState extends ConsumerState<PreferencesScreen> {
   final _prefs = UserPreferencesService.instance;
 
   bool _loading = true;
@@ -45,7 +47,7 @@ class _PreferencesScreenState extends State<PreferencesScreen> {
 
   Future<void> _setBasemap(String basemap) async {
     setState(() => _basemap = basemap);
-    await _prefs.saveBasemapTheme(basemap);
+    await ref.read(basemapPreferenceProvider.notifier).setBasemap(basemap);
   }
 
   @override

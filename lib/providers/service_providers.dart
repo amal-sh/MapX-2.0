@@ -24,3 +24,34 @@ final locationServiceProvider = Provider<LocationService>((ref) {
 final searchServiceProvider = Provider<SearchService>((ref) {
   return SearchService.instance;
 });
+
+/// Provider for the user's selected basemap preference ('dark', 'light', 'standard').
+final basemapPreferenceProvider =
+    StateNotifierProvider<BasemapPreferenceNotifier, String>((ref) {
+  return BasemapPreferenceNotifier();
+});
+
+class BasemapPreferenceNotifier extends StateNotifier<String> {
+  BasemapPreferenceNotifier() : super('dark') {
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString('mapx_prefs_basemap_theme');
+      if (saved != null && (saved == 'dark' || saved == 'light' || saved == 'standard')) {
+        state = saved;
+      }
+    } catch (_) {}
+  }
+
+  Future<void> setBasemap(String theme) async {
+    state = theme;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('mapx_prefs_basemap_theme', theme);
+    } catch (_) {}
+  }
+}
+
