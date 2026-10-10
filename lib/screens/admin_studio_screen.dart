@@ -11,9 +11,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/dashboard_providers.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';
+import '../widgets/building_editor_sheet.dart';
 import 'campus_map_screen.dart';
 import 'map_editor_screen.dart';
-import 'map_viewer_screen.dart';
 import 'mapping_screen.dart';
 
 class AdminStudioScreen extends StatelessWidget {
@@ -89,6 +89,11 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
     );
 
     final location = await LocationService.instance.getCurrentLocation();
+    // Register the building shell first so it exists even with zero floors
+    // (e.g. user backs out of the recording flow) and even without GPS.
+    await ref
+        .read(dashboardProvider.notifier)
+        .registerBuilding(details.name, location);
     if (location != null) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
@@ -97,6 +102,11 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
       unawaited(FirestoreService.instance.saveBuilding(
         buildingName: details.name,
         location: location,
+        initialFloor: details.floor,
+      ));
+    } else {
+      unawaited(FirestoreService.instance.saveBuilding(
+        buildingName: details.name,
         initialFloor: details.floor,
       ));
     }
@@ -185,10 +195,61 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
     );
   }
 
+  void _confirmDeleteBuilding(String building, int floorCount) {
+    final outerContext = context;
+    showDialog(
+      context: outerContext,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+          'Delete Building?',
+          style: GoogleFonts.inter(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          floorCount == 0
+              ? 'Are you sure you want to delete "$building"? It has no recorded floors, so only the building entry will be removed.'
+              : 'Are you sure you want to delete "$building" and all $floorCount recorded floor${floorCount == 1 ? '' : 's'}? This removes their trajectories, anchors, and places. This cannot be undone.',
+          style: GoogleFonts.inter(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.inter(color: const Color(0xFF71717A)),
+            ),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await ref
+                  .read(dashboardProvider.notifier)
+                  .deleteBuilding(building);
+              if (!outerContext.mounted) return;
+              ScaffoldMessenger.of(outerContext).showSnackBar(
+                SnackBar(
+                  content: Text('Deleted "$building".'),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+            child: Text(
+              'Delete',
+              style: GoogleFonts.inter(
+                color: const Color(0xFFDC2626),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final dashboardState = ref.watch(dashboardProvider);
-    final buildings = dashboardState.groupedByBuilding.entries.toList();
+    final grouped = dashboardState.groupedByBuilding;
+    final buildingNames = dashboardState.allBuildingNames;
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -318,9 +379,7 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                         ),
                       ),
                       Text(
-                        buildings.isNotEmpty
-                            ? '${buildings.length} Sites'
-                            : '3 Sites',
+                        '${buildingNames.length} Sites',
                         style: GoogleFonts.inter(
                           fontSize: 12,
                           fontWeight: FontWeight.w500,
@@ -331,16 +390,17 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                   ),
                   const SizedBox(height: 14),
 
-                  // Building Groups
-                  if (buildings.isNotEmpty)
-                    for (final b in buildings)
+                  // Building Groups (includes zero-floor buildings).
+                  if (buildingNames.isNotEmpty)
+                    for (final bName in buildingNames)
                       _buildBuildingSection(
-                        name: b.key,
-                        floors: b.value,
-                        location: dashboardState.buildingLocations[b.key],
+                        name: bName,
+                        floors: grouped[bName] ?? const [],
+                        location: dashboardState.buildingLocations[bName],
+                        stats: dashboardState.floorStats,
                       )
                   else
-                    ..._buildSampleBuildingSections(),
+                    _buildEmptyStudioState(),
                 ],
               ),
             ),
@@ -354,14 +414,12 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
   }
 
   Widget _buildMetricsBanner(DashboardState state) {
-    final buildingCount = state.groupedByBuilding.isNotEmpty
-        ? state.groupedByBuilding.length
-        : 3;
-    final floorCount =
-        state.entries.isNotEmpty ? state.entries.length : 9;
-    final nodeCount = state.entries.isNotEmpty
-        ? state.entries.length * 48
-        : 412;
+    final buildingCount = state.allBuildingNames.length;
+    final floorCount = state.entries.length;
+    final nodeCount =
+        state.floorStats.values.fold<int>(0, (sum, s) => sum + s.nodeCount);
+    final placeCount =
+        state.floorStats.values.fold<int>(0, (sum, s) => sum + s.placeCount);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -374,7 +432,7 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
         children: [
           Expanded(
             child: Text(
-              '$buildingCount Buildings  ·  $floorCount Floors  ·  $nodeCount AR Nodes',
+              '$buildingCount Buildings  Ã‚Â·  $floorCount Floors  Ã‚Â·  $nodeCount Nodes  Ã‚Â·  $placeCount Places',
               style: GoogleFonts.inter(
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
@@ -397,18 +455,19 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
   Widget _buildBuildingSection({
     required String name,
     required List<BuildingMapEntry> floors,
+    required Map<String, FloorMapStats> stats,
     BuildingLocation? location,
   }) {
     final locStr = location != null
-        ? '${location.latitude.toStringAsFixed(4)}° N, ${location.longitude.toStringAsFixed(4)}° W · ${floors.length} Floors'
-        : '37.7749° N, 122.4194° W · ${floors.length} Floors';
+        ? '${location.latitude.toStringAsFixed(4)}Ã‚Â° N, ${location.longitude.toStringAsFixed(4)}Ã‚Â° W Ã‚Â· ${floors.length} Floor${floors.length == 1 ? '' : 's'}'
+        : '${floors.length} Floor${floors.length == 1 ? '' : 's'} Ã‚Â· GPS pending';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 22),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header Row: Building Name & + Floor Button
+          // Header Row: Building Name, + Floor Button & building menu
           Row(
             children: [
               Expanded(
@@ -455,36 +514,125 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                   ),
                 ),
               ),
+              PopupMenuButton<String>(
+                icon: const Icon(CupertinoIcons.ellipsis,
+                    size: 18, color: Color(0xFF27272A)),
+                tooltip: 'Building options',
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                onSelected: (value) {
+                  if (value == 'edit') {
+                    showEditBuildingSheet(context, name);
+                  } else if (value == 'delete') {
+                    _confirmDeleteBuilding(name, floors.length);
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'edit',
+                    child: Row(
+                      children: [
+                        const Icon(CupertinoIcons.settings,
+                            size: 16, color: Color(0xFF27272A)),
+                        const SizedBox(width: 10),
+                        Text('Edit building',
+                            style: GoogleFonts.inter(fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        const Icon(CupertinoIcons.trash,
+                            size: 16, color: Color(0xFFDC2626)),
+                        const SizedBox(width: 10),
+                        Text('Delete building',
+                            style: GoogleFonts.inter(
+                                fontSize: 13,
+                                color: const Color(0xFFDC2626))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
           const SizedBox(height: 10),
 
-          // Floors List Container
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFFE4E4E7)),
-            ),
-            child: Column(
-              children: [
-                for (int i = 0; i < floors.length; i++) ...[
-                  if (i > 0)
-                    const Divider(
-                        height: 1, thickness: 1, color: Color(0xFFF4F4F5)),
-                  _buildFloorItem(
-                    title: floors[i].floor == null
-                        ? 'Floor 1'
-                        : 'Floor ${floors[i].floor}',
-                    area: '(Main Area)',
-                    subtitle: '48 Nodes · 2 Elevators · 2 Stairs',
-                    mapKey: floors[i].key,
-                    floorEntry: floors[i],
+          // Floors list, or an explicit empty-building card so a building
+          // with zero floors still exists and can be managed.
+          if (floors.isEmpty)
+            Container(
+              width: double.infinity,
+              padding:
+                  const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFAFAFA),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFE4E4E7)),
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFF4F4F5),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(CupertinoIcons.compass,
+                        color: Color(0xFF71717A), size: 18),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'No indoor maps recorded yet',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.black,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Tap "+ Floor" above to map\nrooms, halls, and AR anchor points.',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      color: const Color(0xFF71717A),
+                      height: 1.4,
+                    ),
                   ),
                 ],
-              ],
+              ),
+            )
+          else
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFE4E4E7)),
+              ),
+              child: Column(
+                children: [
+                  for (int i = 0; i < floors.length; i++) ...[
+                    if (i > 0)
+                      const Divider(
+                          height: 1, thickness: 1, color: Color(0xFFF4F4F5)),
+                    _buildFloorItem(
+                      title: floors[i].displayTitle,
+                      meta: floors[i].label != null
+                          ? 'Floor ${floors[i].floor ?? '?'}'
+                          : null,
+                      stats: stats[floors[i].key],
+                      mapKey: floors[i].key,
+                      floorEntry: floors[i],
+                    ),
+                  ],
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -492,63 +640,79 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
 
   Widget _buildFloorItem({
     required String title,
-    required String area,
-    required String subtitle,
+    required String? meta,
+    required FloorMapStats? stats,
     required String mapKey,
     required BuildingMapEntry floorEntry,
   }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Row(
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: const Color(0xFFF4F4F5),
-              borderRadius: BorderRadius.circular(10),
+    final distanceLabel = stats?.distanceLabel ?? '';
+    final tag = [
+      ?meta,
+      if (distanceLabel.isNotEmpty) distanceLabel,
+    ].join(' · ');
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => showFloorSettingsSheet(context, floorEntry),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4F4F5),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(CupertinoIcons.square_stack_3d_up,
+                  color: Color(0xFF18181B), size: 18),
             ),
-            child: const Icon(CupertinoIcons.square_stack_3d_up,
-                color: Color(0xFF18181B), size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      title,
-                      style: GoogleFonts.inter(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.black,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          title,
+                          style: GoogleFonts.inter(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      area,
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: const Color(0xFF71717A),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: GoogleFonts.inter(
-                    fontSize: 11,
-                    color: const Color(0xFF71717A),
+                      if (tag.isNotEmpty) ...[
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            tag,
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              color: const Color(0xFF71717A),
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 2),
+                  Text(
+                    stats?.subtitle ?? 'No data yet',
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      color: const Color(0xFF71717A),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
 
-          // Action Buttons: Edit, Walk (Preview), Delete
+          // Action Buttons: Node Editor, Delete (no Walk/Navigate â€” that's for users)
           IconButton(
             icon: const Icon(CupertinoIcons.pencil,
                 size: 18, color: Color(0xFF27272A)),
@@ -566,363 +730,55 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
             },
           ),
           IconButton(
-            icon: const Icon(CupertinoIcons.person_fill,
-                size: 18, color: Color(0xFF27272A)),
-            tooltip: 'Walk in AR',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => MapViewerScreen(
-                    mapKey: mapKey,
-                    mapName: floorEntry.title,
-                  ),
-                ),
-              );
-            },
-          ),
-          IconButton(
             icon: const Icon(CupertinoIcons.trash,
                 size: 18, color: Color(0xFF71717A)),
             tooltip: 'Delete Floor',
             onPressed: () => _confirmDelete(floorEntry),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  List<Widget> _buildSampleBuildingSections() {
-    return [
-      // Complex 1: Science & Engineering Complex
-      _buildSampleBuildingGroup(
-        name: 'Science & Engineering Complex',
-        gps: '37.7749° N, 122.4194° W · 3 Floors',
-        floors: const [
-          _SampleFloor(
-            title: 'Floor 3',
-            area: '(Laboratories)',
-            nodes: '62 Nodes · 2 Elevators · 2 Stairs',
-          ),
-          _SampleFloor(
-            title: 'Floor 2',
-            area: '(Lecture Halls)',
-            nodes: '48 Nodes · 3 Elevators · 2 Stairs',
-          ),
-          _SampleFloor(
-            title: 'Floor 1',
-            area: '(Main Atrium)',
-            nodes: '84 Nodes · 4 Exits · Emergency Access',
-          ),
-        ],
-      ),
-
-      // Complex 2: Central Library & Media Center
-      _buildSampleBuildingGroup(
-        name: 'Central Library & Media Center',
-        gps: '37.7752° N, 122.4181° W · 2 Floors',
-        floors: const [
-          _SampleFloor(
-            title: 'Floor 2',
-            area: '(Quiet Archives)',
-            nodes: '36 Nodes · 1 Elevator · 2 Stairs',
-          ),
-          _SampleFloor(
-            title: 'Floor 1',
-            area: '(Tech Hub & Circ)',
-            nodes: '52 Nodes · 2 Elevators · 3 Exits',
-          ),
-        ],
-      ),
-
-      // Complex 3: Innovation & Computing Lab [Draft] (Empty state card)
-      _buildDraftEmptyBuilding(
-        name: 'Innovation & Computing Lab',
-        gps: '37.7761° N, 122.4202° W · 0 Floors',
-      ),
-    ];
-  }
-
-  Widget _buildSampleBuildingGroup({
-    required String name,
-    required String gps,
-    required List<_SampleFloor> floors,
-  }) {
+  Widget _buildEmptyStudioState() {
     return Container(
-      margin: const EdgeInsets.only(bottom: 22),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFAFA),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE4E4E7)),
+      ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      style: GoogleFonts.inter(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.black,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      gps,
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: const Color(0xFF71717A),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  side: const BorderSide(color: Color(0xFFE4E4E7)),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                onPressed: () => _addFloor(name),
-                child: Text(
-                  '+ Floor',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
           Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFFE4E4E7)),
+            width: 44,
+            height: 44,
+            decoration: const BoxDecoration(
+              color: Color(0xFFF4F4F5),
+              shape: BoxShape.circle,
             ),
-            child: Column(
-              children: [
-                for (int i = 0; i < floors.length; i++) ...[
-                  if (i > 0)
-                    const Divider(
-                        height: 1, thickness: 1, color: Color(0xFFF4F4F5)),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 12),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 38,
-                          height: 38,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF4F4F5),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Icon(
-                              CupertinoIcons.square_stack_3d_up,
-                              color: Color(0xFF18181B),
-                              size: 18),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Text(
-                                    floors[i].title,
-                                    style: GoogleFonts.inter(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w700,
-                                      color: Colors.black,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    floors[i].area,
-                                    style: GoogleFonts.inter(
-                                      fontSize: 12,
-                                      color: const Color(0xFF71717A),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                floors[i].nodes,
-                                style: GoogleFonts.inter(
-                                  fontSize: 11,
-                                  color: const Color(0xFF71717A),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(CupertinoIcons.pencil,
-                              size: 18, color: Color(0xFF27272A)),
-                          tooltip: 'Edit Floor',
-                          onPressed: () => _startNewMap(),
-                        ),
-                        IconButton(
-                          icon: const Icon(CupertinoIcons.person_fill,
-                              size: 18, color: Color(0xFF27272A)),
-                          tooltip: 'Walk in AR',
-                          onPressed: () => _startNewMap(),
-                        ),
-                        IconButton(
-                          icon: const Icon(CupertinoIcons.trash,
-                              size: 18, color: Color(0xFF71717A)),
-                          tooltip: 'Delete Floor',
-                          onPressed: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Sample floor map item'),
-                                duration: Duration(seconds: 1),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ],
-            ),
+            child: const Icon(CupertinoIcons.building_2_fill,
+                color: Color(0xFF71717A), size: 20),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDraftEmptyBuilding({
-    required String name,
-    required String gps,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 22),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        name,
-                        style: GoogleFonts.inter(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.black,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF4F4F5),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: const Color(0xFFE4E4E7)),
-                      ),
-                      child: Text(
-                        'Draft',
-                        style: GoogleFonts.inter(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: const Color(0xFF71717A),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  side: const BorderSide(color: Color(0xFFE4E4E7)),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                onPressed: () => _addFloor(name),
-                child: Text(
-                  '+ Floor',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 2),
+          const SizedBox(height: 12),
           Text(
-            gps,
+            'No buildings mapped yet',
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Colors.black,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Tap "Walk & Record New Floor" above to map\nyour first building.',
+            textAlign: TextAlign.center,
             style: GoogleFonts.inter(
               fontSize: 12,
               color: const Color(0xFF71717A),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // No indoor maps recorded yet container
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFAFAFA),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: const Color(0xFFE4E4E7),
-                style: BorderStyle.solid,
-              ),
-            ),
-            child: Column(
-              children: [
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFF4F4F5),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(CupertinoIcons.compass,
-                      color: Color(0xFF71717A), size: 18),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'No indoor maps recorded yet',
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.black,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Tap "+ Walk & Record" above to map\nrooms, halls, and AR anchor points.',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    color: const Color(0xFF71717A),
-                    height: 1.4,
-                  ),
-                ),
-              ],
+              height: 1.4,
             ),
           ),
         ],
@@ -982,18 +838,6 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
       ),
     );
   }
-}
-
-class _SampleFloor {
-  final String title;
-  final String area;
-  final String nodes;
-
-  const _SampleFloor({
-    required this.title,
-    required this.area,
-    required this.nodes,
-  });
 }
 
 class _NewAdminMapDialog extends StatefulWidget {
