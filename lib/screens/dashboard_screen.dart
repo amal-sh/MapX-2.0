@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -204,21 +205,18 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
       final camera = _previewMap.camera;
       final world = camera.projectAtZoom(target, zoom);
       final media = MediaQuery.of(context);
+      // Floating glass header (~52px pill + 8px margin) replaces kToolbarHeight.
+      const floatingHeaderHeight = 68.0;
       final bodyHeight = media.size.height -
           media.padding.top -
-          kToolbarHeight;
+          floatingHeaderHeight;
       final shifted =
           world + Offset(0, _sheetFraction * bodyHeight / 2);
       _previewMap.move(camera.unprojectAtZoom(shifted, zoom), zoom);
     } catch (_) {}
   }
 
-  void _goToMyLocation() {
-    if (_userGps == null) return;
-    _centerOn(LatLng(_userGps!.$1, _userGps!.$2), 17);
-  }
-
-  Future<void> _openFullOutdoorMap() async {
+  void _openFullOutdoorMap() async {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const OutdoorMapScreen()),
@@ -246,36 +244,8 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
 
     return Scaffold(
       backgroundColor: Colors.white,
+      extendBodyBehindAppBar: true,
       drawer: const DashboardSidebarDrawer(),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        leading: Builder(
-          builder: (scaffoldContext) => IconButton(
-            icon: const Icon(CupertinoIcons.bars, color: Colors.black, size: 22),
-            tooltip: 'Menu',
-            onPressed: () => Scaffold.of(scaffoldContext).openDrawer(),
-          ),
-        ),
-        title: Image.asset(
-          'assets/images/transp_banner.png',
-          height: 26,
-          fit: BoxFit.contain,
-        ),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(
-              CupertinoIcons.map_fill,
-              color: Colors.black,
-              size: 21,
-            ),
-            tooltip: 'Outdoor map',
-            onPressed: _openFullOutdoorMap,
-          ),
-        ],
-      ),
       body: Stack(
         children: [
           // Outdoor CARTO map directly below the app bar.
@@ -329,24 +299,45 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
               ],
             ),
           ),
-          // Map controls above the sheet.
+          // Floating glassmorphic header: separate circular buttons +
+          // rounded center pill, all floating over the map.
           Positioned(
-            top: 12,
-            right: 12,
-            child: Column(
-              children: [
-                _buildMapControlButton(
-                  icon: CupertinoIcons.location_circle_fill,
-                  tooltip: 'My location',
-                  onPressed: _userGps == null ? null : _goToMyLocation,
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                child: Builder(
+                  builder: (scaffoldContext) => Row(
+                    children: [
+                      _GlassCircleButton(
+                        icon: CupertinoIcons.bars,
+                        tooltip: 'Menu',
+                        onPressed: () =>
+                            Scaffold.of(scaffoldContext).openDrawer(),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _GlassPill(
+                          child: Image.asset(
+                            'assets/images/transp_banner.png',
+                            height: 34,
+                            fit: BoxFit.contain,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      _GlassCircleButton(
+                        icon: CupertinoIcons.map_fill,
+                        tooltip: 'Outdoor map',
+                        onPressed: _openFullOutdoorMap,
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 8),
-                _buildMapControlButton(
-                  icon: CupertinoIcons.arrow_up_left_arrow_down_right,
-                  tooltip: 'Expand outdoor map',
-                  onPressed: _openFullOutdoorMap,
-                ),
-              ],
+              ),
             ),
           ),
           // Directory content lives in a moveable bottom sheet covering
@@ -361,35 +352,172 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
     );
   }
 
-  Widget _buildMapControlButton({
-    required IconData icon,
-    required String tooltip,
-    required VoidCallback? onPressed,
-  }) {
-    return Material(
-      color: Colors.white,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Color(0xFFE4E4E7), width: 1),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: onPressed,
-        child: SizedBox(
-          width: 40,
-          height: 40,
-          child: Icon(
-            icon,
-            size: 18,
-            color: onPressed == null
-                ? const Color(0xFFA1A1AA)
-                : Colors.black,
+}
+
+/// Separate circular floating glass button for the dashboard header.
+/// Monochrome frosted glass: heavy blur + white gradient, black icon.
+class _GlassCircleButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  const _GlassCircleButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipOval(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+        child: Container(
+          width: 52,
+          height: 52,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(alpha: 0.85),
+                Colors.white.withValues(alpha: 0.55),
+              ],
+            ),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.65),
+              width: 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.12),
+                blurRadius: 20,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Stack(
+            children: [
+              // Top sheen for a frosted-glass highlight.
+              Positioned(
+                top: 6,
+                left: 14,
+                right: 14,
+                child: Container(
+                  height: 10,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.white.withValues(alpha: 0.55),
+                        Colors.white.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Material(
+                color: Colors.transparent,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: onPressed,
+                  child: Tooltip(
+                    message: tooltip,
+                    child: const SizedBox(
+                      width: 52,
+                      height: 52,
+                    ),
+                  ),
+                ),
+              ),
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Icon(icon, color: Colors.black, size: 22),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
+}
 
+/// Floating perfectly-rounded (stadium) frosted-glass pill for the banner.
+class _GlassPill extends StatelessWidget {
+  final Widget child;
+
+  const _GlassPill({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    // 52px tall -> 26px radius = fully rounded ends regardless of width.
+    const radius = BorderRadius.all(Radius.circular(26));
+    return ClipRRect(
+      borderRadius: radius,
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+        child: Container(
+          height: 52,
+          alignment: Alignment.center,
+          decoration: const BoxDecoration(
+            borderRadius: radius,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color.fromRGBO(255, 255, 255, 0.85),
+                Color.fromRGBO(255, 255, 255, 0.55),
+              ],
+            ),
+            border: Border.fromBorderSide(
+              BorderSide(
+                color: Color.fromRGBO(255, 255, 255, 0.65),
+                width: 1.2,
+              ),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Color.fromRGBO(0, 0, 0, 0.12),
+                blurRadius: 20,
+                offset: Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Top sheen for a frosted-glass highlight.
+              Positioned(
+                top: 5,
+                left: 28,
+                right: 28,
+                child: Container(
+                  height: 12,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Color.fromRGBO(255, 255, 255, 0.55),
+                        Color.fromRGBO(255, 255, 255, 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              child,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Compact monochrome pin for the dashboard preview map.

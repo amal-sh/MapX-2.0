@@ -31,6 +31,45 @@ TileLayer osmTileLayer({bool dark = false}) => TileLayer(
       maxNativeZoom: 20,
     );
 
+/// Outdoor basemap styles: CARTO monochrome `dark_all` / `light_all`
+/// plus the standard (full-color) OpenStreetMap tiles.
+enum BasemapTheme { dark, light, standard }
+
+/// Basemap tile layer for [theme]. `standard` uses the OSM tile servers
+/// directly (no CARTO key needed); dark/light use the CARTO `*_all` styles.
+TileLayer basemapTileLayer(BasemapTheme theme) {
+  switch (theme) {
+    case BasemapTheme.standard:
+      return TileLayer(
+        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        userAgentPackageName: 'com.example.mapx2',
+        maxNativeZoom: 19,
+      );
+    case BasemapTheme.light:
+      return osmTileLayer(dark: false);
+    case BasemapTheme.dark:
+      return osmTileLayer(dark: true);
+  }
+}
+
+/// Attribution matching [basemapTileLayer]: standard OSM credits only the
+/// OSM contributors, while the CARTO styles additionally credit CARTO.
+Widget basemapAttribution(BasemapTheme theme) {
+  if (theme == BasemapTheme.standard) {
+    return RichAttributionWidget(
+      showFlutterMapAttribution: false,
+      popupBackgroundColor: Colors.white,
+      attributions: [
+        TextSourceAttribution(
+          'OpenStreetMap contributors',
+          prependCopyright: true,
+        ),
+      ],
+    );
+  }
+  return osmAttribution();
+}
+
 /// Attribution OSM (ODbL) + CARTO require on every map using these tiles.
 /// Kept as a tiny ⓘ toggle instead of a permanent banner: the credits live
 /// in its popup. Do not remove — the ODbL license and CARTO terms both

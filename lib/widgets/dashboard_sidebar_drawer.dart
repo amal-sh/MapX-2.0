@@ -7,11 +7,11 @@ import 'package:google_fonts/google_fonts.dart';
 import '../models/navigation_trip.dart';
 import '../screens/admin_studio_screen.dart';
 import '../screens/outdoor_map_screen.dart';
+import '../screens/preferences_screen.dart';
 import '../screens/recent_trips_screen.dart';
 import '../screens/saved_places_screen.dart';
 import '../services/navigation_history_service.dart';
 import '../services/saved_places_service.dart';
-import '../services/user_preferences_service.dart';
 
 /// Navigation sidebar drawer.
 ///
@@ -144,8 +144,7 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
     if (widget.onOpenPreferences != null) {
       widget.onOpenPreferences!();
     } else {
-      Navigator.pop(context);
-      _showPreferencesSheet();
+      _pushAndRefresh(const PreferencesScreen());
     }
   }
 
@@ -165,110 +164,6 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
       Navigator.pop(context);
       _showHelpDialog();
     }
-  }
-
-  Future<void> _showPreferencesSheet() {
-    final prefs = UserPreferencesService.instance;
-    return showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => FutureBuilder<List<String>>(
-        future: Future.wait(
-            [prefs.loadDistanceUnits(), prefs.loadMapTheme()]),
-        builder: (context, snapshot) {
-          var units = UserPreferencesService.unitsMeters;
-          var theme = UserPreferencesService.themeMonochrome;
-          if (snapshot.hasData) {
-            units = snapshot.data![0];
-            theme = snapshot.data![1];
-          }
-          return StatefulBuilder(
-            builder: (context, setSheetState) => SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Preferences',
-                      style: GoogleFonts.inter(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Stored on this device only.',
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: const Color(0xFF71717A),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Units of Distance',
-                      style: GoogleFonts.inter(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF71717A),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(
-                            value: UserPreferencesService.unitsMeters,
-                            label: Text('Meters')),
-                        ButtonSegment(
-                            value: UserPreferencesService.unitsFeet,
-                            label: Text('Feet')),
-                      ],
-                      selected: {units},
-                      showSelectedIcon: false,
-                      onSelectionChanged: (selected) async {
-                        await prefs.saveDistanceUnits(selected.first);
-                        setSheetState(() => units = selected.first);
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Default Map Theme',
-                      style: GoogleFonts.inter(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF71717A),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(
-                            value:
-                                UserPreferencesService.themeMonochrome,
-                            label: Text('Monochrome')),
-                        ButtonSegment(
-                            value: UserPreferencesService.themeSystem,
-                            label: Text('System')),
-                      ],
-                      selected: {theme},
-                      showSelectedIcon: false,
-                      onSelectionChanged: (selected) async {
-                        await prefs.saveMapTheme(selected.first);
-                        setSheetState(() => theme = selected.first);
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
   }
 
   void _showDiagnosticsDialog() {

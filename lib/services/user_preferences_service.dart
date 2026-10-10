@@ -16,6 +16,13 @@ class UserPreferencesService {
   static const themeMonochrome = 'monochrome';
   static const themeSystem = 'system';
 
+  /// Default outdoor basemap. Stored separately from the legacy
+  /// monochrome/system UI-theme key above.
+  static const basemapKey = 'mapx_prefs_basemap_theme';
+  static const basemapDark = 'dark';
+  static const basemapLight = 'light';
+  static const basemapStandard = 'standard';
+
   Future<String> loadDistanceUnits() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -55,6 +62,29 @@ class UserPreferencesService {
           themeKey, theme == themeSystem ? themeSystem : themeMonochrome);
     } catch (e) {
       debugPrint('UserPreferencesService.saveMapTheme error: $e');
+    }
+  }
+
+  static const _basemaps = {basemapDark, basemapLight, basemapStandard};
+
+  Future<String> loadBasemapTheme() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final basemap = prefs.getString(basemapKey);
+      return _basemaps.contains(basemap) ? basemap! : basemapDark;
+    } catch (e) {
+      debugPrint('UserPreferencesService.loadBasemapTheme error: $e');
+      return basemapDark;
+    }
+  }
+
+  Future<void> saveBasemapTheme(String basemap) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(basemapKey,
+          _basemaps.contains(basemap) ? basemap : basemapDark);
+    } catch (e) {
+      debugPrint('UserPreferencesService.saveBasemapTheme error: $e');
     }
   }
 
