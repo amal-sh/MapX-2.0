@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -31,6 +32,10 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
   List<BuildingConnection> _connections = [];
   bool _loading = true;
   GeoPoint? _me;
+
+  /// CARTO basemap theme. Dark matches the dashboard preview map;
+  /// the AppBar toggle switches back to light.
+  bool _darkMode = true;
 
   /// Set while linking: the building chosen first.
   String? _connectFrom;
@@ -348,6 +353,13 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
         title: const Text('Outdoor Map'),
         actions: [
           IconButton(
+            icon: Icon(_darkMode
+                ? CupertinoIcons.sun_max_fill
+                : CupertinoIcons.moon_fill),
+            tooltip: _darkMode ? 'Light map' : 'Dark map',
+            onPressed: () => setState(() => _darkMode = !_darkMode),
+          ),
+          IconButton(
             icon: const Icon(Icons.my_location),
             tooltip: 'My location',
             onPressed: _me == null ? null : () => _map.move(_ll(_me!), 18),
@@ -364,19 +376,24 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                     initialCenter: _initialCenter,
                     initialZoom: placed.isEmpty && _me == null ? 4 : 17,
                     maxZoom: 20,
-                    backgroundColor: const Color(0xFFF4F4F5),
+                    backgroundColor: _darkMode
+                        ? const Color(0xFF18181B)
+                        : const Color(0xFFF4F4F5),
                   ),
                   children: [
-                    osmTileLayer(),
+                    osmTileLayer(dark: _darkMode),
                     PolylineLayer(
                       polylines: [
-                        // White casing under each route so the black line
-                        // reads on the light basemap (polished nav look).
+                        // Casing under each route so the line reads on the
+                        // basemap (polished nav look). Colors invert with
+                        // the light/dark theme.
                         for (final c in _connections)
                           Polyline(
                             points: [for (final p in c.route) _ll(p)],
                             strokeWidth: 8,
-                            color: Colors.white,
+                            color: _darkMode
+                                ? const Color(0xFF18181B)
+                                : Colors.white,
                             pattern: c.source == 'straight'
                                 ? StrokePattern.dashed(segments: const [12, 8])
                                 : const StrokePattern.solid(),
@@ -385,7 +402,7 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                           Polyline(
                             points: [for (final p in c.route) _ll(p)],
                             strokeWidth: 5,
-                            color: Colors.black,
+                            color: _darkMode ? Colors.white : Colors.black,
                             pattern: c.source == 'straight'
                                 ? StrokePattern.dashed(segments: const [12, 8])
                                 : const StrokePattern.solid(),
@@ -415,7 +432,7 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                                 child: Icon(Icons.door_front_door, size: 15, color: Colors.black),
                               ),
                             ),
-                        if (_me != null) Marker(point: _ll(_me!), width: 20, height: 20, child: userLocationDot()),
+                        if (_me != null) Marker(point: _ll(_me!), width: 72, height: 72, child: userLocationDot(dark: _darkMode)),
                         for (final b in placed)
                           Marker(
                             point: _ll(b.pinLocation!),

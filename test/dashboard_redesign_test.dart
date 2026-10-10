@@ -17,7 +17,7 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
-  testWidgets('Renders redesigned Dashboard UI with search, chips, directory and compass pill',
+  testWidgets('Renders redesigned Dashboard UI with search, chips and directory',
       (WidgetTester tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
@@ -48,14 +48,19 @@ void main() {
 
     expect(find.text('Science & Engineering Complex'), findsOneWidget);
     expect(find.text('Innovation & Computing Hub'), findsOneWidget);
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -300));
-    await tester.pumpAndSettle();
+    // Content lives in a draggable bottom sheet: drag its scroll view
+    // up (expands the sheet, then scrolls the list) until the last
+    // complex is visible.
+    for (var i = 0; i < 4; i++) {
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+      await tester.pumpAndSettle();
+    }
     expect(find.text('Central Library & Learning Commons'), findsOneWidget);
     expect(find.text('Floors'), findsWidgets);
     expect(find.text('L1'), findsWidgets);
 
-    // Verify Compass calibration status pill
-    expect(find.text('Indoor Compass Calibrated'), findsOneWidget);
+    // No compass status pill overlays the map anymore.
+    expect(find.text('Indoor Compass Calibrated'), findsNothing);
 
     // In User Mode, FAB is not visible
     expect(find.byType(FloatingActionButton), findsNothing);

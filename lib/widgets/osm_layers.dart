@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_map/flutter_map.dart';
 
-/// CARTO light monochrome basemap (OSM data). `light_all` keeps building
-/// footprints and streets readable while staying grayscale to match the
-/// app's monochrome-minimal theme. (`voyager` was trialled but the key
-/// returns fetch errors for that style, so we're back on `light_all`.)
+/// CARTO monochrome basemap (OSM data) in `light_all` or `dark_all`.
+/// Both keep building footprints and streets readable while staying
+/// grayscale to match the app's monochrome-minimal theme. (`voyager`
+/// was trialled but the key returns fetch errors for that style, so
+/// we're on the `*_all` styles.)
 ///
 /// CARTO requires an API key (free up to 5M tile requests/month from
 /// carto.com/basemaps/apikey). Put it in the gitignored `.env` file:
@@ -14,11 +15,17 @@ import 'package:flutter_map/flutter_map.dart';
 String get _cartoApiKey {
   const defined = String.fromEnvironment('CARTO_API_KEY', defaultValue: '');
   if (defined.isNotEmpty) return defined;
-  return dotenv.env['CARTO_API_KEY'] ?? '';
+  try {
+    return dotenv.env['CARTO_API_KEY'] ?? '';
+  } catch (_) {
+    // dotenv not initialized (e.g. widget tests): anonymous CARTO usage.
+    return '';
+  }
 }
 
-TileLayer osmTileLayer() => TileLayer(
-      urlTemplate: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=$_cartoApiKey',
+TileLayer osmTileLayer({bool dark = false}) => TileLayer(
+      urlTemplate:
+          'https://{s}.basemaps.cartocdn.com/${dark ? 'dark_all' : 'light_all'}/{z}/{x}/{y}{r}.png?key=$_cartoApiKey',
       subdomains: const ['a', 'b', 'c', 'd'],
       userAgentPackageName: 'com.example.mapx2',
       maxNativeZoom: 20,
@@ -43,12 +50,44 @@ Widget osmAttribution() => const RichAttributionWidget(
       ],
     );
 
-/// The live "you are here" dot (monochrome so it reads on the light basemap).
-Widget userLocationDot() => Container(
-      decoration: BoxDecoration(
-        color: Colors.black,
-        shape: BoxShape.circle,
-        border: Border.all(color: Colors.white, width: 3),
-        boxShadow: const [BoxShadow(color: Color(0x8827272A), blurRadius: 10, spreadRadius: 2)],
-      ),
-    );
+/// The live "you are here" dot. Inverts with the basemap theme so it
+/// always reads: black dot on light, white dot on dark — with a soft
+/// white radial halo around it on dark so it glows on `dark_all`.
+Widget userLocationDot({bool dark = false}) {
+  final dot = Container(
+    width: 20,
+    height: 20,
+    decoration: BoxDecoration(
+      color: dark ? Colors.white : Colors.black,
+      shape: BoxShape.circle,
+      border: Border.all(
+          color: dark ? const Color(0xFF18181B) : Colors.white, width: 3),
+      boxShadow: const [
+        BoxShadow(
+            color: Color(0x8827272A), blurRadius: 10, spreadRadius: 2)
+      ],
+    ),
+  );
+  if (!dark) return dot;
+  return SizedBox(
+    width: 72,
+    height: 72,
+    child: Stack(
+      alignment: Alignment.center,
+      children: [
+        Container(
+          width: 72,
+          height: 72,
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(
+              colors: [Color(0x2EFFFFFF), Color(0x00FFFFFF)],
+              stops: [0.35, 1.0],
+            ),
+          ),
+        ),
+        dot,
+      ],
+    ),
+  );
+}
