@@ -8,7 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logic/depth_occlusion_manager.dart';
-import '../logic/campus_route_planner.dart';
+import '../logic/outdoor_route_planner.dart';
 import '../logic/floor_graph.dart';
 import '../logic/floor_route_planner.dart';
 import '../logic/relocalization_manager.dart';
@@ -16,7 +16,7 @@ import '../logic/route_instructions.dart';
 import '../logic/route_segment_manager.dart';
 import '../logic/spatial_sensor_fusion.dart';
 import '../logic/wall_collision_validator.dart';
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 import '../models/floor_map_data.dart';
 import '../models/map_models.dart';
 import '../widgets/navigation/ar_mini_map.dart';
@@ -24,7 +24,7 @@ import '../widgets/navigation/ar_path_painter.dart';
 import '../widgets/navigation/ar_world_scanner_overlay.dart';
 import '../widgets/navigation/off_path_direction_prompt.dart';
 import '../widgets/path_map_painter.dart';
-import '../services/campus_repository.dart';
+import '../services/building_repository.dart';
 import '../services/navigation_history_service.dart';
 import 'outdoor_navigation_screen.dart';
 
@@ -62,7 +62,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   // The building shown, every loaded building (this one and any linked to it
   // outdoors) and the links between them.
   String _building = '';
-  Map<String, Map<int, FloorMapData>> _campus = {};
+  Map<String, Map<int, FloorMapData>> _site = {};
   List<BuildingConnection> _connections = [];
 
   // Cross-floor trips: which connector type to route through, and the legs
@@ -192,19 +192,19 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     }
 
     // This building plus those linked to it outdoors.
-    final connections = await CampusRepository.instance.loadConnections();
+    final connections = await BuildingRepository.instance.loadConnections();
     final linked = {building, for (final c in connections.where((c) => c.involves(building))) c.otherEnd(building).building};
-    final campus = {for (final b in linked) if (all[b] != null) b: all[b]!};
+    final site = {for (final b in linked) if (all[b] != null) b: all[b]!};
 
     // A selected place may have been renamed or deleted in the editor.
     final allPlaces = {
-      for (final b in campus.entries)
+      for (final b in site.entries)
         for (final f in b.value.values)
           for (final w in f.waypoints) _Place(b.key, w),
     };
     _Place? defaultStart = allPlaces.contains(_startLocation) ? _startLocation : null;
     _Place? defaultDest = allPlaces.contains(_destination) ? _destination : null;
-    final here = [for (final f in campus[building]!.values) for (final w in f.waypoints) _Place(building, w)];
+    final here = [for (final f in site[building]!.values) for (final w in f.waypoints) _Place(building, w)];
 
     if (widget.targetDestinationName != null) {
       final name = widget.targetDestinationName!.toLowerCase();
@@ -230,7 +230,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     final initialFloor = widget.targetFloor ?? shown?.floor ?? opened.floor;
 
     setState(() {
-      _campus = campus;
+      _site = site;
       _connections = connections;
       _startLocation = defaultStart;
       _destination = defaultDest;
@@ -241,7 +241,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
   /// Makes [building]'s [floor] the one drawn and navigated on.
   void _showBuilding(String building, int floor) {
-    final floors = _campus[building];
+    final floors = _site[building];
     if (floors == null) return;
     _building = building;
     _floors = floors;
@@ -262,31 +262,31 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
   /// Every place: this building's first (lowest floor first), then linked
   /// buildings'.
   List<_Place> get _allPlaces {
-    final buildings = _campus.keys.toList()..sort((a, b) => a == _building ? -1 : (b == _building ? 1 : a.compareTo(b)));
+    final buildings = _site.keys.toList()..sort((a, b) => a == _building ? -1 : (b == _building ? 1 : a.compareTo(b)));
     return [
       for (final b in buildings)
-        for (final f in (_campus[b]!.keys.toList()..sort()))
-          for (final w in _campus[b]![f]!.waypoints) _Place(b, w),
+        for (final f in (_site[b]!.keys.toList()..sort()))
+          for (final w in _site[b]![f]!.waypoints) _Place(b, w),
     ];
   }
 
   String _placeName(_Place p) {
-    final multiFloor = (_campus[p.building]?.length ?? 1) > 1;
-    if (p.building == _building || _campus.length == 1) {
+    final multiFloor = (_site[p.building]?.length ?? 1) > 1;
+    if (p.building == _building || _site.length == 1) {
       return multiFloor ? '${p.displayName} · Floor ${p.floor}' : p.displayName;
     }
     return '${p.displayName} · ${p.building}${multiFloor ? ', Floor ${p.floor}' : ''}';
   }
 
-  CampusTrip? get _plannedTrip {
+  OutdoorTrip? get _plannedTrip {
     final start = _startLocation, destination = _destination;
     if (start == null || destination == null) return null;
-    return CampusRoutePlanner.plan(
+    return OutdoorRoutePlanner.plan(
       graphs: {
-        for (final b in _campus.entries) b.key: {for (final f in b.value.entries) f.key: f.value.graph},
+        for (final b in _site.entries) b.key: {for (final f in b.value.entries) f.key: f.value.graph},
       },
       waypoints: {
-        for (final b in _campus.entries) b.key: {for (final f in b.value.entries) f.key: f.value.waypoints},
+        for (final b in _site.entries) b.key: {for (final f in b.value.entries) f.key: f.value.waypoints},
       },
       connections: _connections,
       startBuilding: start.building,
@@ -855,7 +855,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     const muted = TextStyle(fontSize: 12, color: Color(0xFF71717A));
     if (trip == null) {
       final reason = start.building != destination.building
-          ? '${start.building} and ${destination.building} aren\'t linked. On the home screen, open the Campus '
+          ? '${start.building} and ${destination.building} aren\'t linked. On the home screen, open the Outdoor '
               'Map and link them through their entrances.'
           : 'No stairs or lift links Floor ${start.floor} and Floor ${destination.floor}. '
               'While mapping, mark the same stairs/lift with the same name on both floors.';

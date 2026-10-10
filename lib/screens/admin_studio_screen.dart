@@ -12,7 +12,7 @@ import '../providers/dashboard_providers.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';
 import '../widgets/building_editor_sheet.dart';
-import 'campus_map_screen.dart';
+import 'outdoor_map_screen.dart';
 import 'map_editor_screen.dart';
 import 'mapping_screen.dart';
 
@@ -345,7 +345,7 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                              builder: (_) => const CampusMapScreen()),
+                              builder: (_) => const OutdoorMapScreen()),
                         );
                       },
                       icon: const Icon(CupertinoIcons.circle_grid_hex,

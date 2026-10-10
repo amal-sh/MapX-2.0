@@ -7,14 +7,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../logic/geo_math.dart';
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 import '../models/saved_place.dart';
 import '../providers/dashboard_providers.dart';
 import '../services/location_service.dart';
 import '../widgets/dashboard_sidebar_drawer.dart';
 import '../widgets/save_place_button.dart';
 import 'admin_studio_screen.dart';
-import 'campus_map_screen.dart';
+import 'outdoor_map_screen.dart';
 import 'map_viewer_screen.dart';
 import 'search_screen.dart';
 
@@ -257,11 +257,11 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
               color: Colors.black,
               size: 21,
             ),
-            tooltip: 'Campus map',
+            tooltip: 'Outdoor map',
             onPressed: () async {
               await Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const CampusMapScreen()),
+                MaterialPageRoute(builder: (_) => const OutdoorMapScreen()),
               );
               if (mounted) ref.read(dashboardProvider.notifier).loadMaps();
             },

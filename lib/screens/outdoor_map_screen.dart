@@ -3,31 +3,31 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../logic/geo_math.dart';
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 import '../models/map_models.dart';
 import '../models/saved_place.dart';
-import '../services/campus_repository.dart';
+import '../services/building_repository.dart';
 import '../services/location_service.dart';
 import '../services/routing_service.dart';
 import '../widgets/osm_layers.dart';
 import '../widgets/save_place_button.dart';
 import 'map_viewer_screen.dart';
 
-/// OpenStreetMap view of every mapped building and the outdoor routes
+/// Outdoor map view of every mapped building and the outdoor routes
 /// linking them. Tap a building to open its floors or link it to another.
-class CampusMapScreen extends StatefulWidget {
-  const CampusMapScreen({super.key});
+class OutdoorMapScreen extends StatefulWidget {
+  const OutdoorMapScreen({super.key});
 
   @override
-  State<CampusMapScreen> createState() => _CampusMapScreenState();
+  State<OutdoorMapScreen> createState() => _OutdoorMapScreenState();
 }
 
-class _CampusMapScreenState extends State<CampusMapScreen> {
+class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
   final _map = MapController();
-  final _repo = CampusRepository.instance;
+  final _repo = BuildingRepository.instance;
   final _routing = RoutingService();
 
-  Map<String, CampusBuilding> _buildings = {};
+  Map<String, MappedBuilding> _buildings = {};
   List<BuildingConnection> _connections = [];
   bool _loading = true;
   GeoPoint? _me;
@@ -59,7 +59,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
   // ---- linking -----------------------------------------------------------
 
-  void _onBuildingTap(CampusBuilding building) {
+  void _onBuildingTap(MappedBuilding building) {
     final from = _connectFrom;
     if (from == null) {
       _showBuildingSheet(building);
@@ -71,7 +71,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     }
   }
 
-  void _startConnecting(CampusBuilding from) {
+  void _startConnecting(MappedBuilding from) {
     Navigator.pop(context);
     if (from.entrancesWithGps.isEmpty) {
       _explainNoEntrance(from);
@@ -80,7 +80,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     setState(() => _connectFrom = from.name);
   }
 
-  Future<void> _connect(CampusBuilding a, CampusBuilding b) async {
+  Future<void> _connect(MappedBuilding a, MappedBuilding b) async {
     if (b.entrancesWithGps.isEmpty) {
       _explainNoEntrance(b);
       return;
@@ -142,7 +142,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
   /// The entrances to link. With one each there is nothing to choose;
   /// otherwise the closest pair is suggested.
-  Future<(Waypoint, Waypoint)?> _pickEntrances(CampusBuilding a, CampusBuilding b) async {
+  Future<(Waypoint, Waypoint)?> _pickEntrances(MappedBuilding a, MappedBuilding b) async {
     final as = a.entrancesWithGps, bs = b.entrancesWithGps;
     var best = (as.first, bs.first);
     for (final x in as) {
@@ -191,7 +191,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
   double _gap(Waypoint x, Waypoint y) => haversineMeters((x.latitude!, x.longitude!), (y.latitude!, y.longitude!));
 
-  void _explainNoEntrance(CampusBuilding b) {
+  void _explainNoEntrance(MappedBuilding b) {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -238,7 +238,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
   // ---- building sheet ----------------------------------------------------
 
-  void _showBuildingSheet(CampusBuilding b) {
+  void _showBuildingSheet(MappedBuilding b) {
     final links = _connections.where((c) => c.involves(b.name)).toList();
     final floors = b.floorKeys.keys.toList()..sort();
     showModalBottomSheet<void>(
@@ -345,7 +345,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Campus Map'),
+        title: const Text('Outdoor Map'),
         actions: [
           IconButton(
             icon: const Icon(Icons.my_location),
@@ -364,16 +364,28 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                     initialCenter: _initialCenter,
                     initialZoom: placed.isEmpty && _me == null ? 4 : 17,
                     maxZoom: 20,
+                    backgroundColor: const Color(0xFFF4F4F5),
                   ),
                   children: [
                     osmTileLayer(),
                     PolylineLayer(
                       polylines: [
+                        // White casing under each route so the black line
+                        // reads on the light basemap (polished nav look).
+                        for (final c in _connections)
+                          Polyline(
+                            points: [for (final p in c.route) _ll(p)],
+                            strokeWidth: 8,
+                            color: Colors.white,
+                            pattern: c.source == 'straight'
+                                ? StrokePattern.dashed(segments: const [12, 8])
+                                : const StrokePattern.solid(),
+                          ),
                         for (final c in _connections)
                           Polyline(
                             points: [for (final p in c.route) _ll(p)],
                             strokeWidth: 5,
-                            color: const Color(0xCC2563EB),
+                            color: Colors.black,
                             pattern: c.source == 'straight'
                                 ? StrokePattern.dashed(segments: const [12, 8])
                                 : const StrokePattern.solid(),
@@ -389,8 +401,18 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                               width: 22,
                               height: 22,
                               child: const DecoratedBox(
-                                decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-                                child: Icon(Icons.door_front_door, size: 15),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Color(0xFF18181B),
+                                      blurRadius: 0,
+                                      spreadRadius: 1,
+                                    ),
+                                  ],
+                                ),
+                                child: Icon(Icons.door_front_door, size: 15, color: Colors.black),
                               ),
                             ),
                         if (_me != null) Marker(point: _ll(_me!), width: 20, height: 20, child: userLocationDot()),
@@ -419,7 +441,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                       text: 'Tap the building to link $_connectFrom to',
                       action: TextButton(
                         onPressed: () => setState(() => _connectFrom = null),
-                        child: const Text('Cancel', style: TextStyle(color: Colors.white)),
+                        child: const Text('Cancel', style: TextStyle(color: Colors.black)),
                       ),
                     ),
                   )
@@ -446,28 +468,41 @@ class _BuildingPin extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = selected ? const Color(0xFF2563EB) : Colors.black;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
           padding: const EdgeInsets.all(7),
           decoration: BoxDecoration(
-            color: color,
+            color: Colors.black,
             shape: BoxShape.circle,
             border: Border.all(color: Colors.white, width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.35),
+                blurRadius: 8,
+                spreadRadius: 1,
+              ),
+            ],
           ),
           child: const Icon(Icons.apartment, color: Colors.white, size: 20),
         ),
         const SizedBox(height: 2),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6)),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: selected ? Colors.black : const Color(0xFFE4E4E7),
+              width: 1,
+            ),
+          ),
           child: Text(
             name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: color),
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.black),
           ),
         ),
       ],
@@ -483,13 +518,18 @@ class _Banner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.black.withValues(alpha: 0.85),
+      color: Colors.white,
       borderRadius: BorderRadius.circular(12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0xFFE4E4E7), width: 1),
+      ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 8, 6, 8),
         child: Row(
           children: [
-            Expanded(child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 13))),
+            Expanded(child: Text(text, style: const TextStyle(color: Colors.black, fontSize: 13))),
             ?action,
           ],
         ),

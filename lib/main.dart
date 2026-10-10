@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -7,6 +8,10 @@ import 'screens/dashboard_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // .env holds CARTO_API_KEY locally; missing file must not crash tests.
+  try {
+    await dotenv.load();
+  } catch (_) {}
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );

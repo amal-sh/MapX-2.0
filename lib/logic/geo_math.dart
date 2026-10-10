@@ -1,6 +1,6 @@
 import 'dart:math';
 
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 
 const double _earthRadiusMeters = 6371000;
 

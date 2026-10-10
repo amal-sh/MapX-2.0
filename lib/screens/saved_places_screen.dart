@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/saved_place.dart';
 import '../services/saved_places_service.dart';
-import 'campus_map_screen.dart';
+import 'outdoor_map_screen.dart';
 import 'map_viewer_screen.dart';
 
 /// Offline list of user-saved buildings, floors/blocks and rooms/places.
@@ -57,7 +57,7 @@ class _SavedPlacesScreenState extends State<SavedPlacesScreen> {
       if (!mounted) return;
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const CampusMapScreen()),
+        MaterialPageRoute(builder: (_) => const OutdoorMapScreen()),
       );
       return;
     }

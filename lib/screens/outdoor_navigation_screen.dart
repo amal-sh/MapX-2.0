@@ -6,9 +6,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
-import '../logic/campus_route_planner.dart';
+import '../logic/outdoor_route_planner.dart';
 import '../logic/geo_math.dart';
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 import '../services/location_service.dart';
 import '../widgets/osm_layers.dart';
 

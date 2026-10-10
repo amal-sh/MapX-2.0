@@ -6,7 +6,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../models/navigation_trip.dart';
 import '../screens/admin_studio_screen.dart';
-import '../screens/campus_map_screen.dart';
+import '../screens/outdoor_map_screen.dart';
 import '../screens/recent_trips_screen.dart';
 import '../screens/saved_places_screen.dart';
 import '../services/navigation_history_service.dart';
@@ -120,7 +120,7 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
     if (widget.onOpenCampusOverview != null) {
       widget.onOpenCampusOverview!();
     } else {
-      _pushAndRefresh(const CampusMapScreen());
+      _pushAndRefresh(const OutdoorMapScreen());
     }
   }
 

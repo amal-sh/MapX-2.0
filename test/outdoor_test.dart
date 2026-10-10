@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mapx/logic/campus_route_planner.dart';
+import 'package:mapx/logic/outdoor_route_planner.dart';
 import 'package:mapx/logic/floor_graph.dart';
 import 'package:mapx/logic/geo_math.dart';
-import 'package:mapx/models/campus_models.dart';
+import 'package:mapx/models/outdoor_models.dart';
 import 'package:mapx/models/map_models.dart';
 import 'package:mapx/services/routing_service.dart';
 
@@ -140,7 +140,7 @@ void main() {
       },
     };
 
-    CampusTrip? plan(List<BuildingConnection> links) => CampusRoutePlanner.plan(
+    OutdoorTrip? plan(List<BuildingConnection> links) => OutdoorRoutePlanner.plan(
           graphs: graphs,
           waypoints: waypoints,
           connections: links,

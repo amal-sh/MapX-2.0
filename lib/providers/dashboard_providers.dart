@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logic/floor_graph.dart';
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 import '../models/map_models.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';

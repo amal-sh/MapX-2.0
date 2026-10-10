@@ -1,4 +1,4 @@
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 import '../models/map_models.dart';
 import 'floor_graph.dart';
 import 'floor_route_planner.dart';
@@ -20,14 +20,14 @@ class OutdoorHop {
 
 /// A trip, possibly through several floors and two buildings: indoor [legs]
 /// in order, with an outdoor walk after some of them.
-class CampusTrip {
+class OutdoorTrip {
   final List<TripLeg> legs;
 
   /// Index of a leg -> the outdoor walk taken after it.
   final Map<int, OutdoorHop> outdoorAfterLeg;
   final double distanceMeters;
 
-  const CampusTrip(this.legs, this.outdoorAfterLeg, this.distanceMeters);
+  const OutdoorTrip(this.legs, this.outdoorAfterLeg, this.distanceMeters);
 }
 
 /// Plans trips between places in the same or different buildings. Inside a
@@ -35,8 +35,8 @@ class CampusTrip {
 /// buildings it walks to an entrance linked by a [BuildingConnection], goes
 /// outside, and continues from the linked entrance of the other building.
 /// Only direct connections are used (no passing through a third building).
-class CampusRoutePlanner {
-  static CampusTrip? plan({
+class OutdoorRoutePlanner {
+  static OutdoorTrip? plan({
     required Map<String, Map<int, FloorGraph>> graphs,
     required Map<String, Map<int, List<Waypoint>>> waypoints,
     required List<BuildingConnection> connections,
@@ -67,13 +67,13 @@ class CampusRoutePlanner {
 
     if (startBuilding == destinationBuilding) {
       final legs = indoor(startBuilding, start, destination);
-      return legs == null ? null : CampusTrip(legs, const {}, length(legs));
+      return legs == null ? null : OutdoorTrip(legs, const {}, length(legs));
     }
 
     Waypoint? entrance(EntranceRef ref) =>
         (waypoints[ref.building]?[ref.floor] ?? const <Waypoint>[]).where(ref.matches).firstOrNull;
 
-    CampusTrip? best;
+    OutdoorTrip? best;
     for (final c in connections.where((c) => c.connects(startBuilding, destinationBuilding))) {
       final exit = entrance(c.entranceIn(startBuilding));
       final arrival = entrance(c.otherEnd(startBuilding));
@@ -83,7 +83,7 @@ class CampusRoutePlanner {
       if (before == null || after == null) continue;
       final total = length(before) + c.distanceMeters + length(after);
       if (!total.isFinite || (best != null && total >= best.distanceMeters)) continue;
-      best = CampusTrip(
+      best = OutdoorTrip(
         [...before, ...after],
         {before.length - 1: OutdoorHop(c, startBuilding)},
         total,

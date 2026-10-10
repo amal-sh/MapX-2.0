@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../logic/geo_math.dart';
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 
 /// A walking route between two GPS points.
 class WalkingRoute {

@@ -3,12 +3,12 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/campus_models.dart';
+import '../models/outdoor_models.dart';
 import '../models/map_models.dart';
 import 'firestore_service.dart';
 
 /// A mapped building as seen from the street map.
-class CampusBuilding {
+class MappedBuilding {
   final String name;
 
   /// Floor number -> storage key of that floor's map.
@@ -20,7 +20,7 @@ class CampusBuilding {
   /// Where the building was when it was first mapped, if recorded.
   final GeoPoint? recordedLocation;
 
-  const CampusBuilding({
+  const MappedBuilding({
     required this.name,
     required this.floorKeys,
     required this.entrances,
@@ -46,16 +46,16 @@ class CampusBuilding {
 /// Buildings and the outdoor connections between them. Connections live in
 /// SharedPreferences (so navigation works offline) and in Firestore (so
 /// every phone gets them).
-class CampusRepository {
-  static final CampusRepository instance = CampusRepository._();
-  CampusRepository._();
+class BuildingRepository {
+  static final BuildingRepository instance = BuildingRepository._();
+  BuildingRepository._();
 
   static const _connectionsKey = 'building_connections';
 
   FirestoreService get _firestore => FirestoreService.instance;
 
   /// Every mapped building, from the locally stored floor maps.
-  Future<Map<String, CampusBuilding>> loadBuildings() async {
+  Future<Map<String, MappedBuilding>> loadBuildings() async {
     final prefs = await SharedPreferences.getInstance();
     final floors = <String, Map<int, String>>{};
     final entrances = <String, List<Waypoint>>{};
@@ -89,7 +89,7 @@ class CampusRepository {
 
     return {
       for (final name in floors.keys)
-        name: CampusBuilding(
+        name: MappedBuilding(
           name: name,
           floorKeys: floors[name]!,
           entrances: entrances[name] ?? const [],
