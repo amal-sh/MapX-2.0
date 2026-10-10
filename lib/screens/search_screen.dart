@@ -458,8 +458,10 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.black),
       ),
       subtitle: Text(
-        '${b.floorSummary}${b.distanceFormatted.isNotEmpty ? " · ${b.distanceFormatted}" : ""}',
+        _buildingSubtitle(b),
         style: const TextStyle(fontSize: 12, color: Color(0xFF71717A)),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -476,5 +478,15 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       ),
       onTap: () => _openBuilding(b),
     );
+  }
+
+  /// Single combined line: distance first, then OSM place name, then floors.
+  String _buildingSubtitle(BuildingSearchInfo b) {
+    final parts = <String>[];
+    if (b.distanceFormatted.isNotEmpty) parts.add(b.distanceFormatted);
+    final place = b.placeName?.trim();
+    if (place != null && place.isNotEmpty) parts.add(place);
+    parts.add(b.floorSummary);
+    return parts.join(' · ');
   }
 }

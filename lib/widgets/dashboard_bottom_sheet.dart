@@ -367,6 +367,7 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
                 building.key,
                 building.value,
                 dashboardState.buildingLocations,
+                dashboardState.buildingPlaceNames,
               );
             },
             childCount: buildings.length,
@@ -396,16 +397,22 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
     String name,
     List<BuildingMapEntry> floors,
     Map<String, BuildingLocation> locations,
+    Map<String, String> placeNames,
   ) {
     final location = locations[name];
-    String subtitle = 'High accuracy indoor mesh';
+    final place = placeNames[name]?.trim();
+    // Single combined line: distance first, then OSM place name.
+    String distancePart = 'High accuracy indoor mesh';
     if (widget.userGps != null && location != null) {
       final dist = haversineMeters(
           widget.userGps!, (location.latitude, location.longitude));
-      subtitle = '${_formatDistance(dist)} away · Live GPS calibrated';
+      distancePart = '${_formatDistance(dist)} away';
     } else if (location != null) {
-      subtitle = 'Live GPS calibrated';
+      distancePart = 'Live GPS calibrated';
     }
+    final subtitle = (place != null && place.isNotEmpty)
+        ? '$distancePart · $place'
+        : distancePart;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),

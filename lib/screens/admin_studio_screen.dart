@@ -398,6 +398,8 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                         floors: grouped[bName] ?? const [],
                         location: dashboardState.buildingLocations[bName],
                         stats: dashboardState.floorStats,
+                        placeName:
+                            dashboardState.buildingPlaceNames[bName],
                       )
                   else
                     _buildEmptyStudioState(),
@@ -432,7 +434,7 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
         children: [
           Expanded(
             child: Text(
-              '$buildingCount Buildings  Ã‚Â·  $floorCount Floors  Ã‚Â·  $nodeCount Nodes  Ã‚Â·  $placeCount Places',
+              '$buildingCount Buildings  ·  $floorCount Floors  ·  $nodeCount Nodes  ·  $placeCount Places',
               style: GoogleFonts.inter(
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
@@ -457,10 +459,23 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
     required List<BuildingMapEntry> floors,
     required Map<String, FloorMapStats> stats,
     BuildingLocation? location,
+    String? placeName,
   }) {
-    final locStr = location != null
-        ? '${location.latitude.toStringAsFixed(4)}Ã‚Â° N, ${location.longitude.toStringAsFixed(4)}Ã‚Â° W Ã‚Â· ${floors.length} Floor${floors.length == 1 ? '' : 's'}'
-        : '${floors.length} Floor${floors.length == 1 ? '' : 's'} Ã‚Â· GPS pending';
+    // Same OSM place name shown in the dashboard directory card
+    // (`dashboard_bottom_sheet.dart`): "<floors> · <place>".
+    final floorLabel =
+        '${floors.length} Floor${floors.length == 1 ? '' : 's'}';
+    final place = placeName?.trim();
+    final String locStr;
+    if (place != null && place.isNotEmpty) {
+      locStr = location != null
+          ? '$floorLabel · $place'
+          : '$floorLabel · $place · GPS pending';
+    } else {
+      locStr = location != null
+          ? '$floorLabel · Live GPS calibrated'
+          : '$floorLabel · GPS pending';
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 22),
@@ -491,6 +506,8 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                         fontSize: 12,
                         color: const Color(0xFF71717A),
                       ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),

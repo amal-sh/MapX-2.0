@@ -2,8 +2,10 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../providers/dashboard_providers.dart';
+import '../screens/pick_location_screen.dart';
 import '../services/location_service.dart';
 
 Future<void> showEditBuildingSheet(BuildContext context, String building) {
@@ -99,6 +101,7 @@ class _EditBuildingSheetState extends ConsumerState<_EditBuildingSheet> {
   String? _coordError;
   bool _locating = false;
   bool _renaming = false;
+  bool _picking = false;
 
   @override
   void initState() {
@@ -147,6 +150,19 @@ class _EditBuildingSheetState extends ConsumerState<_EditBuildingSheet> {
     );
   }
 
+  Future<void> _saveLocation(BuildingLocation loc) async {
+    await ref
+        .read(dashboardProvider.notifier)
+        .updateBuildingLocation(widget.building, loc);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Building location updated.'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   Future<void> _useCurrentLocation() async {
     setState(() => _locating = true);
     final loc = await LocationService.instance.getCurrentLocation();
@@ -161,16 +177,40 @@ class _EditBuildingSheetState extends ConsumerState<_EditBuildingSheet> {
       );
       return;
     }
-    await ref
-        .read(dashboardProvider.notifier)
-        .updateBuildingLocation(widget.building, loc);
+    await _saveLocation(loc);
+  }
+
+  /// Opens the OSM pin picker centered on the current fix (or GPS/default),
+  /// then saves whatever the admin confirms.
+  Future<void> _pickOnMap() async {
+    final state = ref.read(dashboardProvider);
+    final current = state.buildingLocations[widget.building];
+    LatLng initial;
+    if (current != null) {
+      initial = LatLng(current.latitude, current.longitude);
+    } else {
+      final gps = await LocationService.instance.getCurrentLocation();
+      if (gps != null) {
+        initial = LatLng(gps.latitude, gps.longitude);
+      } else {
+        initial = const LatLng(20, 78);
+      }
+    }
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Building location updated.'),
-        duration: Duration(seconds: 2),
-      ),
+    setState(() => _picking = true);
+    final picked = await Navigator.push<LatLng>(
+      context,
+      MaterialPageRoute(builder: (_) => PickLocationScreen(initial: initial)),
     );
+    if (!mounted) return;
+    setState(() => _picking = false);
+    if (picked == null) return;
+    await _saveLocation(BuildingLocation(
+      latitude: picked.latitude,
+      longitude: picked.longitude,
+      accuracy: 0,
+      timestamp: DateTime.now(),
+    ));
   }
 
   Future<void> _applyManualCoords() async {
@@ -189,24 +229,17 @@ class _EditBuildingSheetState extends ConsumerState<_EditBuildingSheet> {
       return;
     }
     setState(() => _coordError = null);
-    await ref.read(dashboardProvider.notifier).updateBuildingLocation(
-          widget.building,
-          BuildingLocation(
-            latitude: lat!,
-            longitude: lng!,
-            accuracy: 0,
-            timestamp: DateTime.now(),
-          ),
-        );
+    await _saveLocation(
+      BuildingLocation(
+        latitude: lat!,
+        longitude: lng!,
+        accuracy: 0,
+        timestamp: DateTime.now(),
+      ),
+    );
     if (!mounted) return;
     _latController.clear();
     _lngController.clear();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Building location updated.'),
-        duration: Duration(seconds: 2),
-      ),
-    );
   }
 
   Future<void> _confirmDelete() async {
@@ -256,6 +289,7 @@ class _EditBuildingSheetState extends ConsumerState<_EditBuildingSheet> {
   Widget build(BuildContext context) {
     final state = ref.watch(dashboardProvider);
     final location = state.buildingLocations[widget.building];
+    final placeName = state.buildingPlaceNames[widget.building]?.trim();
     final floors = state.groupedByBuilding[widget.building] ?? const [];
 
     return SafeArea(
@@ -321,20 +355,48 @@ class _EditBuildingSheetState extends ConsumerState<_EditBuildingSheet> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFFE4E4E7)),
               ),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(CupertinoIcons.location_solid,
-                      size: 18, color: Color(0xFF27272A)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      location != null
-                          ? '${location.latitude.toStringAsFixed(6)}, ${location.longitude.toStringAsFixed(6)}'
-                          : 'No GPS fix yet — navigation to this building needs one.',
-                      style: GoogleFonts.inter(
-                          fontSize: 13, color: const Color(0xFF27272A)),
-                    ),
+                  Row(
+                    children: [
+                      const Icon(CupertinoIcons.location_solid,
+                          size: 18, color: Color(0xFF27272A)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          location != null
+                              ? '${location.latitude.toStringAsFixed(6)}, ${location.longitude.toStringAsFixed(6)}'
+                              : 'No GPS fix yet — navigation to this building needs one.',
+                          style: GoogleFonts.inter(
+                              fontSize: 13, color: const Color(0xFF27272A)),
+                        ),
+                      ),
+                    ],
                   ),
+                  if (location != null) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        const Icon(CupertinoIcons.map_pin,
+                            size: 14, color: Color(0xFF71717A)),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            (placeName != null && placeName.isNotEmpty)
+                                ? placeName
+                                : 'Resolving place name…',
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              color: const Color(0xFF71717A),
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -359,6 +421,30 @@ class _EditBuildingSheetState extends ConsumerState<_EditBuildingSheet> {
                     : const Icon(CupertinoIcons.location, size: 18),
                 label: Text(
                     _locating ? 'Locating…' : 'Use current location',
+                    style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF18181B),
+                  side: const BorderSide(color: Color(0xFFE4E4E7)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                onPressed: _picking ? null : _pickOnMap,
+                icon: _picking
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child:
+                            CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(CupertinoIcons.map_pin_ellipse, size: 18),
+                label: Text(
+                    _picking ? 'Opening map…' : 'Pin on map',
                     style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
               ),
             ),

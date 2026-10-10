@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/map_models.dart';
 import '../models/search_models.dart';
+import 'geocoding_service.dart';
 import 'location_service.dart';
 
 class SearchResults {
@@ -97,6 +98,7 @@ class SearchService {
 
     // 4. Construct BuildingSearchInfo with distance calculations
     final buildingList = <BuildingSearchInfo>[];
+    final geo = GeocodingService.instance;
 
     for (final entry in buildingFloors.entries) {
       final name = entry.key;
@@ -136,6 +138,7 @@ class SearchService {
           distanceMeters: dist,
           waypoints: waypoints,
           primaryMapKey: buildingPrimaryMap[name] ?? 'map_$name#${floors.firstOrNull ?? 0}',
+          placeName: await _cachedPlaceName(geo, prefs, name, coords),
         ),
       );
     }
@@ -163,6 +166,35 @@ class SearchService {
       nearbyBuildings: buildingList,
       userLocation: userLoc,
     );
+  }
+
+  /// Reads the cached OSM place name for [name]. Returns null when absent,
+  /// stale (moved >100m or older than 30 days), or unreadable — the
+  /// dashboard background refresh owns fetching.
+  Future<String?> _cachedPlaceName(
+    GeocodingService geo,
+    SharedPreferences prefs,
+    String name,
+    ({double lat, double lng})? coords,
+  ) async {
+    try {
+      final raw = prefs.getString(GeocodingService.cacheKey(name));
+      if (raw == null || coords == null) return null;
+      final cached = await geo.readCached(name);
+      if (cached == null) return null;
+      if (GeocodingService.isStale(
+        cachedLat: cached.lat,
+        cachedLon: cached.lon,
+        currentLat: coords.lat,
+        currentLon: coords.lng,
+        fetchedAt: cached.fetchedAt,
+      )) {
+        return null;
+      }
+      return cached.place.short;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Searches waypoints and buildings according to user query, current building context, and category.

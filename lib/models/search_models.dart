@@ -33,6 +33,9 @@ class BuildingSearchInfo {
   final List<SearchWaypointInfo> waypoints;
   final String primaryMapKey;
 
+  /// OSM reverse-geocoded place name (short form), null while unresolved.
+  final String? placeName;
+
   const BuildingSearchInfo({
     required this.name,
     required this.floors,
@@ -41,6 +44,7 @@ class BuildingSearchInfo {
     this.distanceMeters,
     required this.waypoints,
     required this.primaryMapKey,
+    this.placeName,
   });
 
   String get floorSummary => floors.length == 1 ? '1 floor' : '${floors.length} floors';

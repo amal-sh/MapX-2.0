@@ -7,6 +7,7 @@ import '../logic/floor_graph.dart';
 import '../models/outdoor_models.dart';
 import '../models/map_models.dart';
 import '../services/firestore_service.dart';
+import '../services/geocoding_service.dart';
 import '../services/location_service.dart';
 import 'service_providers.dart';
 
@@ -152,6 +153,8 @@ class BuildingMapEntry {
 class DashboardState {
   final List<BuildingMapEntry> entries;
   final Map<String, BuildingLocation> buildingLocations;
+  /// OSM place names keyed by building name (short form). Absent = unresolved.
+  final Map<String, String> buildingPlaceNames;
   /// Buildings known to exist even when they have zero recorded floors.
   /// Persisted in SharedPreferences under `building_registry` (+ `building_gps_`).
   final Set<String> knownBuildings;
@@ -164,6 +167,7 @@ class DashboardState {
   const DashboardState({
     this.entries = const [],
     this.buildingLocations = const {},
+    this.buildingPlaceNames = const {},
     this.knownBuildings = const {},
     this.floorStats = const {},
     this.isLoading = true,
@@ -174,6 +178,7 @@ class DashboardState {
   DashboardState copyWith({
     List<BuildingMapEntry>? entries,
     Map<String, BuildingLocation>? buildingLocations,
+    Map<String, String>? buildingPlaceNames,
     Set<String>? knownBuildings,
     Map<String, FloorMapStats>? floorStats,
     bool? isLoading,
@@ -183,6 +188,7 @@ class DashboardState {
     return DashboardState(
       entries: entries ?? this.entries,
       buildingLocations: buildingLocations ?? this.buildingLocations,
+      buildingPlaceNames: buildingPlaceNames ?? this.buildingPlaceNames,
       knownBuildings: knownBuildings ?? this.knownBuildings,
       floorStats: floorStats ?? this.floorStats,
       isLoading: isLoading ?? this.isLoading,
@@ -226,6 +232,8 @@ class DashboardNotifier extends Notifier<DashboardState> {
   }
 
   FirestoreService get _firestore => ref.read(firestoreServiceProvider);
+
+  GeocodingService get _geo => GeocodingService.instance;
 
   /// Registry key tracking buildings that exist with zero floors.
   static const registryKey = 'building_registry';
@@ -314,14 +322,87 @@ class DashboardNotifier extends Notifier<DashboardState> {
     }
     await prefs.setString(registryKey, jsonEncode(registry.toList()));
 
+    // Cached OSM place names load synchronously so the list paints
+    // instantly; fresh lookups happen in the background below.
+    final places = Map<String, String>.from(state.buildingPlaceNames);
+    places.removeWhere((name, _) =>
+        tombstoned.contains(name) || !registry.contains(name));
+    for (final name in registry) {
+      final loc = locations[name];
+      if (loc == null) continue;
+      try {
+        final cached = await _geo.readCached(name);
+        if (cached == null) continue;
+        if (GeocodingService.isStale(
+          cachedLat: cached.lat,
+          cachedLon: cached.lon,
+          currentLat: loc.latitude,
+          currentLon: loc.longitude,
+          fetchedAt: cached.fetchedAt,
+        )) {
+          continue;
+        }
+        places[name] = cached.place.short;
+      } catch (_) {}
+    }
+
     state = state.copyWith(
       entries: entries,
       buildingLocations: locations,
+      buildingPlaceNames: places,
       knownBuildings: registry,
       floorStats: stats,
       isLoading: false,
       isSyncing: false,
     );
+
+    unawaited(refreshPlaceNames());
+  }
+
+  /// Background OSM reverse-geocode for buildings with GPS but no fresh
+  /// cached place name. Respects Nominatim fair-use (serial, ≥1s apart via
+  /// [GeocodingService]); updates cards incrementally as names arrive.
+  Future<void> refreshPlaceNames() async {
+    try {
+      final names = state.allBuildingNames
+          .where((n) => state.buildingLocations[n] != null)
+          .toList();
+      for (final name in names) {
+        final loc = state.buildingLocations[name];
+        if (loc == null) continue;
+        try {
+          final cached = await _geo.readCached(name);
+          if (cached != null &&
+              !GeocodingService.isStale(
+                cachedLat: cached.lat,
+                cachedLon: cached.lon,
+                currentLat: loc.latitude,
+                currentLon: loc.longitude,
+                fetchedAt: cached.fetchedAt,
+              )) {
+            if (state.buildingPlaceNames[name] != cached.place.short) {
+              state = state.copyWith(
+                buildingPlaceNames: Map<String, String>.from(
+                    state.buildingPlaceNames)
+                  ..[name] = cached.place.short,
+              );
+            }
+            continue;
+          }
+        } catch (_) {}
+        final place =
+            await _geo.reverseGeocode(loc.latitude, loc.longitude);
+        if (place == null) continue;
+        try {
+          await _geo.writeCached(name, loc.latitude, loc.longitude, place);
+        } catch (_) {}
+        state = state.copyWith(
+          buildingPlaceNames:
+              Map<String, String>.from(state.buildingPlaceNames)
+                ..[name] = place.short,
+        );
+      }
+    } catch (_) {}
   }
 
   /// Registers a building shell (possibly with zero floors) so it survives
@@ -342,6 +423,7 @@ class DashboardNotifier extends Notifier<DashboardState> {
       location: location,
     ));
     state = state.copyWith(knownBuildings: registry);
+    if (location != null) unawaited(refreshPlaceNames());
   }
 
   /// Deletes a map from local storage and dual-deletes in Firestore.
@@ -428,6 +510,8 @@ class DashboardNotifier extends Notifier<DashboardState> {
     state = state.copyWith(
       entries: renamedEntries,
       buildingLocations: renamedLocations,
+      buildingPlaceNames: Map<String, String>.from(state.buildingPlaceNames)
+        ..remove(from),
       knownBuildings: renamedKnown,
       floorStats: renamedStats,
       isSyncing: true,
@@ -475,6 +559,13 @@ class DashboardNotifier extends Notifier<DashboardState> {
       await prefs.remove('building_gps_$from');
     }
 
+    // Migrate cached OSM place name.
+    final oldPlace = prefs.getString(GeocodingService.cacheKey(from));
+    if (oldPlace != null) {
+      await prefs.setString(GeocodingService.cacheKey(to), oldPlace);
+      await prefs.remove(GeocodingService.cacheKey(from));
+    }
+
     // Update registry.
     final registry = _decodeRegistry(prefs.getString(registryKey))
       ..remove(from)
@@ -513,6 +604,8 @@ class DashboardNotifier extends Notifier<DashboardState> {
       buildingLocations: Map<String, BuildingLocation>.from(
           state.buildingLocations)
         ..remove(trimmed),
+      buildingPlaceNames: Map<String, String>.from(state.buildingPlaceNames)
+        ..remove(trimmed),
       knownBuildings: Set<String>.from(state.knownBuildings)
         ..remove(trimmed),
       floorStats: Map<String, FloorMapStats>.from(state.floorStats)
@@ -532,6 +625,7 @@ class DashboardNotifier extends Notifier<DashboardState> {
       await prefs.remove(key);
     }
     await prefs.remove('building_gps_$trimmed');
+    await prefs.remove(GeocodingService.cacheKey(trimmed));
     final registry = _decodeRegistry(prefs.getString(registryKey))
       ..remove(trimmed);
     await prefs.setString(registryKey, jsonEncode(registry.toList()));
@@ -829,12 +923,16 @@ class DashboardNotifier extends Notifier<DashboardState> {
       buildingLocations: Map<String, BuildingLocation>.from(
           state.buildingLocations)
         ..[trimmed] = location,
+      buildingPlaceNames: Map<String, String>.from(state.buildingPlaceNames)
+        ..remove(trimmed),
       isSyncing: true,
     );
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
         'building_gps_$trimmed', jsonEncode(location.toJson()));
+    // Drop the stale place lookup; loadMaps + refresh will re-resolve it.
+    await prefs.remove(GeocodingService.cacheKey(trimmed));
     final remoteOps = <Future>[];
     for (final key in prefs
         .getKeys()
