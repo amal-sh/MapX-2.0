@@ -37,15 +37,31 @@ class FloorRoutePlanner {
     }
 
     final startFloorConnectors =
-        (waypointsByFloor[start.floor] ?? const <Waypoint>[]).where((w) => w.isConnector);
+        (waypointsByFloor[start.floor] ?? const <Waypoint>[]).where((w) => w.isConnector).toList();
     final destFloorConnectors =
-        (waypointsByFloor[destination.floor] ?? const <Waypoint>[]).where((w) => w.isConnector);
+        (waypointsByFloor[destination.floor] ?? const <Waypoint>[]).where((w) => w.isConnector).toList();
 
-    final pairs = <(Waypoint, Waypoint)>[
+    final exactPairs = <(Waypoint, Waypoint)>[
       for (final a in startFloorConnectors)
         for (final b in destFloorConnectors)
           if (a.connectorKey == b.connectorKey) (a, b),
     ];
+
+    final categoryPairs = <(Waypoint, Waypoint)>[
+      for (final a in startFloorConnectors)
+        for (final b in destFloorConnectors)
+          if (a.category == b.category) (a, b),
+    ];
+
+    // Combine: prefer exact matches, but ensure all connector categories available on both floors are represented
+    final pairs = <(Waypoint, Waypoint)>[...exactPairs];
+    for (final cp in categoryPairs) {
+      final hasExactForCategory = exactPairs.any((ep) => ep.$1.category == cp.$1.category);
+      if (!hasExactForCategory) {
+        pairs.add(cp);
+      }
+    }
+
     if (pairs.isEmpty) return null;
 
     final preferred = preferLift ? Waypoint.liftCategory : Waypoint.stairsCategory;

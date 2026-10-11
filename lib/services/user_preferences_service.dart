@@ -23,6 +23,28 @@ class UserPreferencesService {
   static const basemapLight = 'light';
   static const basemapStandard = 'standard';
 
+  /// Preferred vertical connector: elevator (true) or stairs (false).
+  static const connectorPreferenceKey = 'mapx_prefs_prefer_lift';
+
+  Future<bool> loadPreferLift() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(connectorPreferenceKey) ?? true;
+    } catch (e) {
+      debugPrint('UserPreferencesService.loadPreferLift error: $e');
+      return true;
+    }
+  }
+
+  Future<void> savePreferLift(bool preferLift) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(connectorPreferenceKey, preferLift);
+    } catch (e) {
+      debugPrint('UserPreferencesService.savePreferLift error: $e');
+    }
+  }
+
   Future<String> loadDistanceUnits() async {
     try {
       final prefs = await SharedPreferences.getInstance();

@@ -26,6 +26,7 @@ import '../widgets/navigation/off_path_direction_prompt.dart';
 import '../widgets/path_map_painter.dart';
 import '../services/building_repository.dart';
 import '../services/navigation_history_service.dart';
+import '../services/user_preferences_service.dart';
 import 'outdoor_navigation_screen.dart';
 
 class MapViewerScreen extends StatefulWidget {
@@ -228,12 +229,14 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
     final shown = widget.targetDestinationName != null ? defaultDest : defaultStart;
     final shownBuilding = shown?.building ?? building;
     final initialFloor = widget.targetFloor ?? shown?.floor ?? opened.floor;
+    final savedPreferLift = await UserPreferencesService.instance.loadPreferLift();
 
     setState(() {
       _site = site;
       _connections = connections;
       _startLocation = defaultStart;
       _destination = defaultDest;
+      _preferLift = savedPreferLift;
       _showBuilding(shownBuilding, initialFloor);
       _isLoading = false;
     });
@@ -886,13 +889,34 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
               children: [
                 SegmentedButton<bool>(
                   segments: const [
-                    ButtonSegment(value: true, label: Text('Lift'), icon: Icon(Icons.elevator_outlined, size: 16)),
-                    ButtonSegment(value: false, label: Text('Stairs'), icon: Icon(Icons.stairs_outlined, size: 16)),
+                    ButtonSegment(
+                      value: true,
+                      label: Text('Elevator'),
+                      icon: Icon(Icons.elevator_outlined, size: 16),
+                    ),
+                    ButtonSegment(
+                      value: false,
+                      label: Text('Stairs'),
+                      icon: Icon(Icons.stairs_outlined, size: 16),
+                    ),
                   ],
                   selected: {_preferLift},
                   showSelectedIcon: false,
-                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                  onSelectionChanged: (s) => setState(() => _preferLift = s.first),
+                  style: ButtonStyle(
+                    backgroundColor: WidgetStateProperty.resolveWith((states) {
+                      if (states.contains(WidgetState.selected)) return Colors.black;
+                      return const Color(0xFFF4F4F5);
+                    }),
+                    foregroundColor: WidgetStateProperty.resolveWith((states) {
+                      if (states.contains(WidgetState.selected)) return Colors.white;
+                      return const Color(0xFF18181B);
+                    }),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onSelectionChanged: (s) {
+                    setState(() => _preferLift = s.first);
+                    UserPreferencesService.instance.savePreferLift(s.first);
+                  },
                 ),
                 const SizedBox(width: 12),
                 Expanded(child: summary),
@@ -1156,14 +1180,35 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                       onSelectionChanged: (s) {
                         setSheetState(() {});
                         setState(() => _preferLift = s.first);
+                        UserPreferencesService.instance.savePreferLift(s.first);
                       },
                     ),
                     if (_startLocation != null &&
                         _destination != null &&
                         (_startLocation!.building != _destination!.building ||
                             _startLocation!.floor != _destination!.floor)) ...[
-                      const SizedBox(height: 16),
-                      _buildTripSummary(),
+                      const SizedBox(height: 14),
+                      Builder(builder: (_) {
+                        final trip = _plannedTrip;
+                        if (trip == null) {
+                          return const Text(
+                            'No vertical connection available between selected floors.',
+                            style: TextStyle(fontSize: 12, color: Color(0xFFB91C1C)),
+                          );
+                        }
+                        final legs = trip.legs;
+                        final steps = <String>[];
+                        for (var i = 0; i < legs.length - 1; i++) {
+                          final hop = trip.outdoorAfterLeg[i];
+                          if (hop != null) {
+                            steps.add('exit at ${legs[i].to.displayName}, walk ${hop.connection.distanceMeters.toStringAsFixed(0)} m outside to ${hop.toBuilding}');
+                          } else {
+                            steps.add('${legs[i].to.displayName} to Floor ${legs[i + 1].floor}');
+                          }
+                        }
+                        return Text('Planned route: Via ${steps.join(', then ')}',
+                            style: GoogleFonts.inter(fontSize: 12, color: const Color(0xFF71717A)));
+                      }),
                     ],
                     const SizedBox(height: 20),
                     const Divider(height: 1, color: Color(0xFFE4E4E7)),
@@ -1571,7 +1616,25 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
 
     final nodes = _computedNodes;
     final floorsList = _floors.keys.toList()..sort((a, b) => b.compareTo(a));
-    final calculatedSteps = _stepCount > 0 ? _stepCount : max(1, (_pathLength / 0.65).round());
+    final routeNodes = _routeNodes;
+    double routeDist = 0.0;
+    if (routeNodes != null && routeNodes.length >= 2) {
+      for (var i = 0; i < routeNodes.length - 1; i++) {
+        final a = routeNodes[i], b = routeNodes[i + 1];
+        routeDist += sqrt(pow(b.east - a.east, 2) + pow(b.north - a.north, 2));
+      }
+    } else {
+      routeDist = _plannedTrip?.distanceMeters ?? _pathLength;
+    }
+    final effectiveDistance = (routeDist.isFinite && routeDist > 0)
+        ? routeDist
+        : (_pathLength.isFinite && _pathLength > 0 ? _pathLength : 0.0);
+    final calculatedSteps = effectiveDistance > 0
+        ? max(1, (effectiveDistance / 0.65).round())
+        : (_stepCount > 0 ? _stepCount : 1);
+    final overviewInstructions = routeNodes != null && routeNodes.length >= 2
+        ? computeTurnInstructions(routeNodes)
+        : const <TurnInstruction>[];
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -1813,6 +1876,12 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                       ),
                     ],
                   ),
+                  if (_startLocation != null &&
+                      _destination != null &&
+                      (_startLocation!.building != _destination!.building ||
+                          _startLocation!.floor != _destination!.floor)) ...[
+                    _buildTripSummary(),
+                  ],
                   const SizedBox(height: 14),
                   // Metrics chip row
                   Container(
@@ -1847,7 +1916,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                             const Icon(CupertinoIcons.circle_grid_hex, size: 13, color: Color(0xFF27272A)),
                             const SizedBox(width: 4),
                             Text(
-                              '${_routeNodes?.length ?? nodes.length} Nodes',
+                              '${routeNodes?.length ?? nodes.length} Nodes',
                               style: GoogleFonts.inter(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
@@ -1863,7 +1932,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                             const Icon(Icons.straighten, size: 13, color: Color(0xFF27272A)),
                             const SizedBox(width: 4),
                             Text(
-                              '${_pathLength.toStringAsFixed(1)} m',
+                              '${effectiveDistance.toStringAsFixed(1)} m',
                               style: GoogleFonts.inter(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
@@ -2004,7 +2073,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                       ),
                     ),
 
-                  // Right floating controls (Compass, Zoom in/out, Recenter FAB)
+                  // Right floating controls (Compass, Zoom in/out)
                   Positioned(
                     right: 16,
                     bottom: 16,
@@ -2085,29 +2154,6 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                             ],
                           ),
                         ),
-                        const SizedBox(height: 10),
-
-                        // Recenter FAB
-                        InkWell(
-                          onTap: _resetView,
-                          borderRadius: BorderRadius.circular(22),
-                          child: Container(
-                            width: 44,
-                            height: 44,
-                            decoration: BoxDecoration(
-                              color: Colors.black,
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.25),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 3),
-                                ),
-                              ],
-                            ),
-                            child: const Icon(CupertinoIcons.location_fill, size: 18, color: Colors.white),
-                          ),
-                        ),
                       ],
                     ),
                   ),
@@ -2158,11 +2204,15 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _turnInstructions.isNotEmpty
-                                  ? _turnInstructions.first.label
-                                  : (_hasNextLeg
-                                      ? 'Take connector to next floor'
-                                      : 'Follow path to destination'),
+                              overviewInstructions.isNotEmpty
+                                  ? overviewInstructions.first.label
+                                  : (_turnInstructions.isNotEmpty
+                                      ? _turnInstructions.first.label
+                                      : (_hasNextLeg
+                                          ? (_displayLeg?.to.category == Waypoint.liftCategory
+                                              ? 'Take elevator to next floor'
+                                              : 'Take stairs to next floor')
+                                          : 'Follow path to destination')),
                               style: GoogleFonts.inter(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
@@ -2173,7 +2223,7 @@ class _MapViewerScreenState extends State<MapViewerScreen> with SingleTickerProv
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              'In ${_pathLength > 0 ? _pathLength.toStringAsFixed(0) : "12"} meters',
+                              'In ${effectiveDistance > 0 ? effectiveDistance.toStringAsFixed(0) : "12"} meters',
                               style: GoogleFonts.inter(
                                 fontSize: 12,
                                 color: const Color(0xFF71717A),
