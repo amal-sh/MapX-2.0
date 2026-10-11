@@ -12,6 +12,9 @@ import '../providers/dashboard_providers.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';
 import '../widgets/building_editor_sheet.dart';
+import '../widgets/dialogs/add_floor_dialog.dart';
+import '../widgets/dialogs/confirm_delete_dialog.dart';
+import '../widgets/dialogs/create_building_dialog.dart';
 import 'outdoor_map_screen.dart';
 import 'map_editor_screen.dart';
 import 'mapping_screen.dart';
@@ -62,11 +65,9 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
   }
 
   Future<void> _startNewMap() async {
-    final details = await showDialog<({String name, int floor})>(
-      context: context,
-      builder: (_) => _NewAdminMapDialog(
-        exists: ref.read(dashboardProvider.notifier).exists,
-      ),
+    final details = await CreateBuildingDialog.show(
+      context,
+      exists: ref.read(dashboardProvider.notifier).exists,
     );
     if (details == null || !mounted) return;
 
@@ -128,12 +129,10 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
   }
 
   Future<void> _addFloor(String building) async {
-    final details = await showDialog<({String name, int floor})>(
-      context: context,
-      builder: (_) => _AddAdminFloorDialog(
-        building: building,
-        exists: ref.read(dashboardProvider.notifier).exists,
-      ),
+    final details = await AddFloorDialog.show(
+      context,
+      building: building,
+      exists: ref.read(dashboardProvider.notifier).exists,
     );
     if (details == null || !mounted) return;
 
@@ -157,92 +156,36 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
     }
   }
 
-  void _confirmDelete(BuildingMapEntry entry) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'Delete Floor Map?',
-          style: GoogleFonts.inter(fontWeight: FontWeight.w700),
-        ),
-        content: Text(
+  Future<void> _confirmDelete(BuildingMapEntry entry) async {
+    final confirmed = await ConfirmDeleteDialog.show(
+      context,
+      title: 'Delete Floor Map?',
+      message:
           'Are you sure you want to delete "${entry.title}"? This will remove its recorded trajectory, anchors, and places.',
-          style: GoogleFonts.inter(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              'Cancel',
-              style: GoogleFonts.inter(color: const Color(0xFF71717A)),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ref.read(dashboardProvider.notifier).deleteMap(entry.key);
-            },
-            child: Text(
-              'Delete',
-              style: GoogleFonts.inter(
-                color: const Color(0xFFDC2626),
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
-      ),
     );
+    if (confirmed == true && mounted) {
+      ref.read(dashboardProvider.notifier).deleteMap(entry.key);
+    }
   }
 
-  void _confirmDeleteBuilding(String building, int floorCount) {
-    final outerContext = context;
-    showDialog(
-      context: outerContext,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(
-          'Delete Building?',
-          style: GoogleFonts.inter(fontWeight: FontWeight.w700),
-        ),
-        content: Text(
-          floorCount == 0
-              ? 'Are you sure you want to delete "$building"? It has no recorded floors, so only the building entry will be removed.'
-              : 'Are you sure you want to delete "$building" and all $floorCount recorded floor${floorCount == 1 ? '' : 's'}? This removes their trajectories, anchors, and places. This cannot be undone.',
-          style: GoogleFonts.inter(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(
-              'Cancel',
-              style: GoogleFonts.inter(color: const Color(0xFF71717A)),
-            ),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(dialogContext);
-              await ref
-                  .read(dashboardProvider.notifier)
-                  .deleteBuilding(building);
-              if (!outerContext.mounted) return;
-              ScaffoldMessenger.of(outerContext).showSnackBar(
-                SnackBar(
-                  content: Text('Deleted "$building".'),
-                  duration: const Duration(seconds: 2),
-                ),
-              );
-            },
-            child: Text(
-              'Delete',
-              style: GoogleFonts.inter(
-                color: const Color(0xFFDC2626),
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
-      ),
+  Future<void> _confirmDeleteBuilding(String building, int floorCount) async {
+    final confirmed = await ConfirmDeleteDialog.show(
+      context,
+      title: 'Delete Building?',
+      message: floorCount == 0
+          ? 'Are you sure you want to delete "$building"? It has no recorded floors, so only the building entry will be removed.'
+          : 'Are you sure you want to delete "$building" and all $floorCount recorded floor${floorCount == 1 ? '' : 's'}? This removes their trajectories, anchors, and places. This cannot be undone.',
     );
+    if (confirmed == true && mounted) {
+      await ref.read(dashboardProvider.notifier).deleteBuilding(building);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Deleted "$building".'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   @override
@@ -857,168 +800,3 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
   }
 }
 
-class _NewAdminMapDialog extends StatefulWidget {
-  final bool Function(String name, int floor) exists;
-  const _NewAdminMapDialog({required this.exists});
-
-  @override
-  State<_NewAdminMapDialog> createState() => _NewAdminMapDialogState();
-}
-
-class _NewAdminMapDialogState extends State<_NewAdminMapDialog> {
-  final _nameController = TextEditingController();
-  final _floorController = TextEditingController();
-  String? _nameError;
-  String? _floorError;
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _floorController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final name = _nameController.text.trim();
-    final floor = int.tryParse(_floorController.text.trim());
-    setState(() {
-      _nameError = name.isEmpty ? 'Enter a map name' : null;
-      _floorError = floor == null
-          ? 'Enter a floor number'
-          : (name.isNotEmpty && widget.exists(name, floor))
-              ? 'Floor $floor of "$name" already exists'
-              : null;
-    });
-    if (_nameError == null && _floorError == null) {
-      Navigator.pop(context, (name: name, floor: floor!));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Walk & Record New Floor',
-          style: GoogleFonts.inter(fontWeight: FontWeight.w700)),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _nameController,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            textInputAction: TextInputAction.next,
-            decoration: InputDecoration(
-              labelText: 'Building name',
-              hintText: 'e.g., Science Complex',
-              errorText: _nameError,
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _floorController,
-            keyboardType: const TextInputType.numberWithOptions(signed: true),
-            textInputAction: TextInputAction.done,
-            onSubmitted: (_) => _submit(),
-            decoration: InputDecoration(
-              labelText: 'Floor number',
-              hintText: '0 = ground floor, 1 = first floor',
-              errorText: _floorError,
-            ),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text('Cancel',
-              style: GoogleFonts.inter(color: const Color(0xFF71717A))),
-        ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.black,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-          onPressed: _submit,
-          child: Text('Start Recording',
-              style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
-        ),
-      ],
-    );
-  }
-}
-
-class _AddAdminFloorDialog extends StatefulWidget {
-  final String building;
-  final bool Function(String name, int floor) exists;
-  const _AddAdminFloorDialog({required this.building, required this.exists});
-
-  @override
-  State<_AddAdminFloorDialog> createState() => _AddAdminFloorDialogState();
-}
-
-class _AddAdminFloorDialogState extends State<_AddAdminFloorDialog> {
-  final _floorController = TextEditingController();
-  String? _floorError;
-
-  @override
-  void dispose() {
-    _floorController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final floor = int.tryParse(_floorController.text.trim());
-    setState(() {
-      _floorError = floor == null
-          ? 'Enter a floor number'
-          : widget.exists(widget.building, floor)
-              ? 'Floor $floor already exists'
-              : null;
-    });
-    if (_floorError == null) {
-      Navigator.pop(context, (name: widget.building, floor: floor!));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Add Floor to ${widget.building}',
-          style: GoogleFonts.inter(fontWeight: FontWeight.w700)),
-      content: TextField(
-        controller: _floorController,
-        autofocus: true,
-        keyboardType: const TextInputType.numberWithOptions(signed: true),
-        textInputAction: TextInputAction.done,
-        onSubmitted: (_) => _submit(),
-        decoration: InputDecoration(
-          labelText: 'Floor number',
-          hintText: 'e.g., 2',
-          errorText: _floorError,
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text('Cancel',
-              style: GoogleFonts.inter(color: const Color(0xFF71717A))),
-        ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.black,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-          onPressed: _submit,
-          child: Text('Start Recording',
-              style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
-        ),
-      ],
-    );
-  }
-}

@@ -4,28 +4,22 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import '../models/navigation_trip.dart';
 import '../screens/admin_studio_screen.dart';
 import '../screens/outdoor_map_screen.dart';
 import '../screens/preferences_screen.dart';
-import '../screens/recent_trips_screen.dart';
 import '../screens/saved_places_screen.dart';
-import '../services/navigation_history_service.dart';
 import '../services/saved_places_service.dart';
 
 /// Navigation sidebar drawer.
 ///
-/// Saved-place counts and the latest trip are loaded from the offline
-/// on-device stores ([SavedPlacesService], [NavigationHistoryService]) —
-/// nothing here is hardcoded. Diagnostics are queried live from the
-/// device instead of claiming fixed "ready" values.
+/// Saved-place counts are loaded from the offline on-device store
+/// ([SavedPlacesService]) — nothing here is hardcoded. Diagnostics are queried
+/// live from the device instead of claiming fixed "ready" values.
 class DashboardSidebarDrawer extends StatefulWidget {
   final bool isAdminMode;
-  final String appVersion;
   final VoidCallback? onOpenAdminStudio;
   final VoidCallback? onOpenCampusOverview;
   final VoidCallback? onOpenSavedPlaces;
-  final VoidCallback? onOpenRecentTrips;
   final VoidCallback? onOpenPreferences;
   final VoidCallback? onOpenDiagnostics;
   final VoidCallback? onOpenHelp;
@@ -33,11 +27,9 @@ class DashboardSidebarDrawer extends StatefulWidget {
   const DashboardSidebarDrawer({
     super.key,
     this.isAdminMode = false,
-    this.appVersion = 'v2.0',
     this.onOpenAdminStudio,
     this.onOpenCampusOverview,
     this.onOpenSavedPlaces,
-    this.onOpenRecentTrips,
     this.onOpenPreferences,
     this.onOpenDiagnostics,
     this.onOpenHelp,
@@ -51,7 +43,6 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
   static const _arChannel = MethodChannel('mapx/arcore');
 
   int _savedCount = 0;
-  NavigationTrip? _latestTrip;
   String _arCoreStatus = 'Checking…';
   String _locationStatus = 'Checking…';
 
@@ -64,11 +55,9 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
 
   Future<void> _reloadOfflineData() async {
     final saved = await SavedPlacesService.instance.load();
-    final latest = await NavigationHistoryService.instance.latest();
     if (!mounted) return;
     setState(() {
       _savedCount = saved.length;
-      _latestTrip = latest;
     });
   }
 
@@ -129,14 +118,6 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
       widget.onOpenSavedPlaces!();
     } else {
       _pushAndRefresh(const SavedPlacesScreen());
-    }
-  }
-
-  void _handleRecentTrips() {
-    if (widget.onOpenRecentTrips != null) {
-      widget.onOpenRecentTrips!();
-    } else {
-      _pushAndRefresh(const RecentTripsScreen());
     }
   }
 
@@ -282,10 +263,6 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    final recentSubtitle = _latestTrip == null
-        ? 'No trips yet'
-        : _latestTrip!.destinationDisplay;
-
     return Drawer(
       backgroundColor: Colors.white,
       surfaceTintColor: Colors.transparent,
@@ -299,27 +276,13 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
             children: [
               // Header with MapX logo and Close X button
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Image.asset(
-                        'assets/images/transp_banner.png',
-                        height: 24,
-                        fit: BoxFit.contain,
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        '${widget.appVersion} • Indoor AR Engine',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: const Color(0xFF71717A),
-                        ),
-                      ),
-                    ],
+                  Image.asset(
+                    'assets/images/transp_banner.png',
+                    height: 36,
+                    fit: BoxFit.contain,
                   ),
-                  const Spacer(),
                   Container(
                     width: 32,
                     height: 32,
@@ -436,48 +399,6 @@ class _DashboardSidebarDrawerState extends State<DashboardSidebarDrawer> {
                         ),
                         const SizedBox(width: 8),
                       ],
-                      const Icon(CupertinoIcons.chevron_right,
-                          size: 14, color: Color(0xFF71717A)),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 6),
-
-              // Recent Trips
-              GestureDetector(
-                onTap: _handleRecentTrips,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 11),
-                  child: Row(
-                    children: [
-                      const Icon(CupertinoIcons.compass,
-                          size: 18, color: Color(0xFF27272A)),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Recent Trips',
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: const Color(0xFF18181B),
-                          ),
-                        ),
-                      ),
-                      Flexible(
-                        child: Text(
-                          recentSubtitle,
-                          style: GoogleFonts.inter(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: const Color(0xFF71717A),
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
                       const Icon(CupertinoIcons.chevron_right,
                           size: 14, color: Color(0xFF71717A)),
                     ],

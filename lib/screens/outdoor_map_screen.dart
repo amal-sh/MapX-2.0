@@ -167,8 +167,8 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                 (
                   value: UserPreferencesService.basemapDark,
                   icon: CupertinoIcons.moon_fill,
-                  title: 'Dark',
-                  subtitle: 'Monochrome dark basemap',
+                  title: 'Dark Blue',
+                  subtitle: 'Dark blue shade night basemap',
                 ),
                 (
                   value: UserPreferencesService.basemapLight,

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,6 +10,9 @@ import '../logic/floor_graph.dart';
 import '../models/floor_map_data.dart';
 import '../models/map_models.dart';
 import '../services/firestore_service.dart';
+import '../widgets/dialogs/delete_path_dialog.dart';
+import '../widgets/dialogs/discard_changes_dialog.dart';
+import '../widgets/dialogs/join_path_dialog.dart';
 import '../widgets/marker_dialog.dart';
 import '../widgets/path_map_painter.dart';
 import 'mapping_screen.dart';
@@ -102,20 +106,7 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
 
   Future<bool> _confirmDiscard() async {
     if (!_dirty) return true;
-    final discard = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Discard changes?'),
-        content: const Text('Your edits to this map have not been saved.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep editing')),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Discard', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
+    final discard = await DiscardChangesDialog.show(context);
     return discard ?? false;
   }
 
@@ -334,17 +325,10 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
 
     final place = _waypoints.where((w) => w.globalStepIndex == target).firstOrNull;
     final what = place == null ? 'an existing path' : place.displayName;
-    final join = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('Join the new path?'),
-        content: Text('It ended ${distTo(target).toStringAsFixed(1)} m from $what. Connect it there?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Leave as dead end')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Join')),
-        ],
-      ),
+    final join = await JoinPathDialog.show(
+      context,
+      distanceMeters: distTo(target),
+      targetName: what,
     );
     return join == true ? target : null;
   }
@@ -352,22 +336,10 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
   Future<void> _confirmDeleteLink(int linkIndex) async {
     final length = _graph.linkLength(linkIndex, _links[linkIndex]);
     final placesOnIt = _waypoints.where((w) => _graph.linkOfNode(w.globalStepIndex) == linkIndex).length;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete this path?'),
-        content: Text(
-          'This drawn path is ${length.toStringAsFixed(1)} m long.'
-          '${placesOnIt > 0 ? ' Places marked on it (and paths drawn from them) will be removed too.' : ''}',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
+    final ok = await DeletePathDialog.show(
+      context,
+      lengthMeters: length,
+      placesCount: placesOnIt,
     );
     if (ok != true) return;
     setState(() {
@@ -403,6 +375,10 @@ class _MapEditorScreenState extends State<MapEditorScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(CupertinoIcons.back, color: Colors.black),
+            onPressed: () => Navigator.maybePop(context),
+          ),
           title: Text('Edit · ${widget.title}'),
           actions: [
             TextButton(

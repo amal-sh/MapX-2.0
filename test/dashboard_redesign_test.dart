@@ -102,16 +102,14 @@ void main() {
     await tester.tap(find.byTooltip('Menu'));
     await tester.pumpAndSettle();
 
-    // Verify Drawer Header
-    expect(find.text('v2.0 • Indoor AR Engine'), findsOneWidget);
+    // Verify Drawer Header (banner shown, subtitle removed)
+    expect(find.text('v2.0 • Indoor AR Engine'), findsNothing);
 
-    // Verify Explore section (live offline data, no hardcoded badge/subtitle)
+    // Verify Explore section
     expect(find.text('EXPLORE'), findsOneWidget);
     expect(find.text('Campus Overview'), findsOneWidget);
     expect(find.text('Saved Places & Rooms'), findsOneWidget);
-    expect(find.text('Recent Trips'), findsOneWidget);
-    // Empty history shows a placeholder instead of a hardcoded destination.
-    expect(find.text('No trips yet'), findsOneWidget);
+    expect(find.text('Recent Trips'), findsNothing);
     // Empty saves show no count badge.
     expect(find.text('4'), findsNothing);
 
