@@ -247,6 +247,7 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                 bottom: MediaQuery.of(context).padding.bottom + 96,
                 child: FloatingActionButton.small(
                   heroTag: 'recenter',
+                  tooltip: 'My location',
                   backgroundColor: const Color(0xFF18181B),
                   foregroundColor: Colors.white,
                   onPressed: here == null

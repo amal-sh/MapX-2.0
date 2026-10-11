@@ -491,7 +491,7 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                           ),
                           const SizedBox(height: 10),
                           _GlassCircleButton(
-                            icon: CupertinoIcons.location_fill,
+                            icon: Icons.my_location,
                             tooltip: 'My location',
                             onPressed: _me == null
                                 ? null

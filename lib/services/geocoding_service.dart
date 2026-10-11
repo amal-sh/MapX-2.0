@@ -172,6 +172,84 @@ class GeocodingService {
     }
   }
 
+  static const userLocationCacheKey = 'user_current_place_cache';
+
+  /// Reads the cached place name for the user's location, or null when absent.
+  Future<({PlaceName place, double lat, double lon, DateTime fetchedAt})?>
+      readUserPlace() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(userLocationCacheKey);
+      if (raw == null) return null;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final short = (data['short'] as String?)?.trim();
+      if (short == null || short.isEmpty) return null;
+      return (
+        place: PlaceName(
+          short: short,
+          full: (data['full'] as String?) ?? short,
+        ),
+        lat: (data['lat'] as num).toDouble(),
+        lon: (data['lon'] as num).toDouble(),
+        fetchedAt: DateTime.tryParse(data['fetchedAt'] as String? ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Writes the cached place name for the user's location.
+  Future<void> writeUserPlace(
+    double lat,
+    double lon,
+    PlaceName place,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        userLocationCacheKey,
+        jsonEncode({
+          'short': place.short,
+          'full': place.full,
+          'lat': lat,
+          'lon': lon,
+          'fetchedAt': DateTime.now().toIso8601String(),
+        }),
+      );
+    } catch (e) {
+      debugPrint('GeocodingService: writeUserPlace error: $e');
+    }
+  }
+
+  /// Resolves the user's place name for [lat]/[lon].
+  /// Uses cached result if fresh (<100m moved and <30 days old),
+  /// otherwise reverse-geocodes with Nominatim and updates cache.
+  Future<String?> resolveUserPlace(
+    double lat,
+    double lon, {
+    http.Client? client,
+  }) async {
+    final cached = await readUserPlace();
+    if (cached != null &&
+        !isStale(
+          cachedLat: cached.lat,
+          cachedLon: cached.lon,
+          currentLat: lat,
+          currentLon: lon,
+          fetchedAt: cached.fetchedAt,
+        )) {
+      return cached.place.short;
+    }
+    final fresh = await reverseGeocode(lat, lon, client: client);
+    if (fresh != null) {
+      await writeUserPlace(lat, lon, fresh);
+      return fresh.short;
+    }
+    return cached?.place.short;
+  }
+
+
   /// True when the cached fix is older than 30 days or the building moved
   /// more than ~100m since the lookup.
   static bool isStale({

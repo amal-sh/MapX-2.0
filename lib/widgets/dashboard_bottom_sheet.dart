@@ -6,6 +6,7 @@ import '../logic/geo_math.dart';
 import '../models/outdoor_models.dart';
 import '../models/saved_place.dart';
 import '../providers/dashboard_providers.dart';
+import '../services/geocoding_service.dart';
 import '../services/location_service.dart';
 import '../widgets/save_place_button.dart';
 import '../screens/admin_studio_screen.dart';
@@ -37,6 +38,110 @@ class DashboardBottomSheet extends StatefulWidget {
 
 class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
   String _selectedCategory = 'All';
+  String? _userPlaceName;
+  bool _isResolvingPlace = false;
+  GeoPoint? _lastGeocodedGps;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCachedUserPlace();
+    if (widget.userGps != null) {
+      _resolveUserPlace(widget.userGps!);
+    } else {
+      _tryFetchLocation();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant DashboardBottomSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final gps = widget.userGps;
+    if (gps != null && gps != oldWidget.userGps) {
+      if (_lastGeocodedGps == null ||
+          haversineMeters(_lastGeocodedGps!, gps) > 50) {
+        _resolveUserPlace(gps);
+      }
+    }
+  }
+
+  Future<void> _loadCachedUserPlace() async {
+    try {
+      final cached = await GeocodingService.instance.readUserPlace();
+      if (cached != null && mounted && _userPlaceName == null) {
+        setState(() {
+          _userPlaceName = cached.place.short;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _tryFetchLocation() async {
+    try {
+      final loc = await LocationService.instance.getCurrentLocation();
+      if (loc != null && mounted) {
+        final gps = (loc.latitude, loc.longitude);
+        _resolveUserPlace(gps);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _resolveUserPlace(GeoPoint gps) async {
+    if (_isResolvingPlace) return;
+    _lastGeocodedGps = gps;
+    if (mounted) setState(() => _isResolvingPlace = true);
+
+    try {
+      final place =
+          await GeocodingService.instance.resolveUserPlace(gps.$1, gps.$2);
+      if (place != null && place.isNotEmpty && mounted) {
+        setState(() {
+          _userPlaceName = place;
+          _isResolvingPlace = false;
+        });
+        return;
+      }
+
+      // Fallback: check if near any known building from dashboardState
+      String? fallback;
+      if (widget.dashboardState.buildingLocations.isNotEmpty) {
+        double minDistance = double.infinity;
+        String? nearestName;
+        for (final entry in widget.dashboardState.buildingLocations.entries) {
+          final d = haversineMeters(
+              gps, (entry.value.latitude, entry.value.longitude));
+          if (d < minDistance) {
+            minDistance = d;
+            nearestName = entry.key;
+          }
+        }
+        if (nearestName != null && minDistance <= 250) {
+          fallback = 'Near $nearestName';
+        }
+      }
+
+      fallback ??=
+          '${gps.$1.toStringAsFixed(4)}, ${gps.$2.toStringAsFixed(4)}';
+      if (mounted) {
+        setState(() {
+          _userPlaceName = _userPlaceName ?? fallback;
+          _isResolvingPlace = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isResolvingPlace = false);
+      }
+    }
+  }
+
+  Future<void> _refreshLocation() async {
+    if (widget.userGps != null) {
+      await _resolveUserPlace(widget.userGps!);
+    } else {
+      await _tryFetchLocation();
+    }
+  }
 
   static const _categories = [
     'All',
@@ -159,11 +264,13 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
                               ),
                             ),
                           ),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 8),
+                          _buildUserLocationHeader(),
+                          const SizedBox(height: 8),
                           _buildSearchBar(),
-                          const SizedBox(height: 14),
+                          const SizedBox(height: 12),
                           _buildCategoryFilter(),
-                          const SizedBox(height: 20),
+                          const SizedBox(height: 16),
                           showSkeleton
                               ? _buildDirectoryHeaderSkeleton()
                               : _buildDirectoryHeader(dashboardState),
@@ -185,42 +292,104 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
     );
   }
 
-  Widget _buildSearchBar() {
+  Widget _buildUserLocationHeader() {
+    final place = _userPlaceName;
+    final isResolving = _isResolvingPlace && (place == null || place.isEmpty);
+
+    final displayText = (place != null && place.isNotEmpty)
+        ? place
+        : (widget.userGps != null
+            ? 'Locating place...'
+            : 'Location unavailable');
+
     return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const SearchScreen()),
-        );
-      },
+      onTap: _refreshLocation,
       child: Container(
-        height: 48,
-        decoration: BoxDecoration(
-          color: const Color(0xFFF4F4F5),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        height: 24,
+        alignment: Alignment.centerLeft,
         child: Row(
           children: [
             const Icon(
-              CupertinoIcons.search,
-              color: Color(0xFF71717A),
-              size: 20,
+              CupertinoIcons.location_fill,
+              size: 13,
+              color: Color(0xFF18181B),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 6),
             Expanded(
-              child: Text(
-                'Search rooms, labs, stairs, restrooms...',
-                style: GoogleFonts.inter(
-                  color: const Color(0xFF71717A),
-                  fontSize: 14,
-                  fontWeight: FontWeight.w400,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
+              child: isResolving
+                  ? const _Pulse(
+                      child: _SkeletonBox(width: 120, height: 11, radius: 4),
+                    )
+                  : Text(
+                      displayText,
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF18181B),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
             ),
+            if (_isResolvingPlace)
+              const SizedBox(
+                width: 10,
+                height: 10,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.5,
+                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF18181B)),
+                ),
+              ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: () {
+        Navigator.push(
+          context,
+          SearchScreen.route(),
+        );
+      },
+      child: Hero(
+        tag: 'campus_search_bar_hero',
+        flightShuttleBuilder: SearchScreen.buildSearchHeroFlight,
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            height: 48,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F4F5),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFFE4E4E7), width: 1),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Row(
+              children: [
+                const Icon(
+                  CupertinoIcons.search,
+                  color: Color(0xFF71717A),
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Search rooms, labs, stairs, restrooms...',
+                    style: GoogleFonts.inter(
+                      color: const Color(0xFF71717A),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -240,9 +409,18 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
             onTap: () {
               setState(() => _selectedCategory = cat);
               if (cat != 'All') {
+                final query = switch (cat) {
+                  'Restrooms' => 'Restroom',
+                  'Elevators' => 'Elevator',
+                  'Classrooms' => 'Classroom',
+                  'Labs' => 'Lab',
+                  'Offices' => 'Office',
+                  'Dining' => 'Dining',
+                  _ => cat,
+                };
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const SearchScreen()),
+                  SearchScreen.route(initialQuery: query),
                 );
               }
             },

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mapx/screens/dashboard_screen.dart';
+import 'package:mapx/services/geocoding_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -157,5 +158,34 @@ void main() {
     expect(find.text('Walk & Record New Floor'), findsOneWidget);
     expect(find.text('Connector Links'), findsOneWidget);
     expect(find.text('MAPPED BUILDINGS & FLOORS'), findsOneWidget);
+  });
+
+  testWidgets('Dashboard renders cached user current location place name',
+      (WidgetTester tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      if (methodCall.method == 'checkAvailability') {
+        return 'SUPPORTED_INSTALLED';
+      }
+      return null;
+    });
+
+    await GeocodingService.instance.writeUserPlace(
+      3.15,
+      101.7,
+      const PlaceName(
+        short: 'Engineering Quad',
+        full: 'Engineering Quad, North Campus',
+      ),
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: DashboardScreen(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Engineering Quad'), findsOneWidget);
   });
 }
