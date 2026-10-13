@@ -76,6 +76,11 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   @override
   void initState() {
     super.initState();
+    final cached = LocationService.instance.cachedLocation;
+    if (cached != null) {
+      _userGps = (cached.latitude, cached.longitude);
+      _locating = false;
+    }
     _sheetController.addListener(() {
       final size = _sheetController.size;
       if (size > 0) _sheetFraction = size;
@@ -93,6 +98,10 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
 
   Future<void> _requestInitialLocationPermission() async {
     try {
+      if (_userGps != null) {
+        ref.read(dashboardProvider.notifier).loadMaps();
+        return;
+      }
       final granted = await LocationService.instance.requestPermission();
       if (granted && mounted) {
         final loc = await LocationService.instance.getCurrentLocation();

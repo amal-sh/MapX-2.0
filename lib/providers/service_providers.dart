@@ -20,6 +20,9 @@ final locationServiceProvider = Provider<LocationService>((ref) {
   return LocationService.instance;
 });
 
+/// Provider for holding the current user GPS location.
+final userLocationProvider = StateProvider<BuildingLocation?>((ref) => null);
+
 /// Provider for SearchService singleton. Overridable in tests.
 final searchServiceProvider = Provider<SearchService>((ref) {
   return SearchService.instance;

@@ -15,7 +15,7 @@ import '../widgets/building_editor_sheet.dart';
 import '../widgets/dialogs/add_floor_dialog.dart';
 import '../widgets/dialogs/confirm_delete_dialog.dart';
 import '../widgets/dialogs/create_building_dialog.dart';
-import 'outdoor_map_screen.dart';
+import 'connector_links_screen.dart';
 import 'map_editor_screen.dart';
 import 'mapping_screen.dart';
 
@@ -45,6 +45,7 @@ class _AdminStudioScreenContent extends ConsumerStatefulWidget {
 class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
   static const _methodChannel = MethodChannel('mapx/arcore');
   bool _isDeviceSupported = true;
+  bool _isSettingUp = false;
 
   @override
   void initState() {
@@ -71,60 +72,54 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
     );
     if (details == null || !mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2, color: Colors.white),
-            ),
-            SizedBox(width: 12),
-            Text('Acquiring building GPS coordinates...'),
-          ],
-        ),
-        duration: Duration(seconds: 2),
-      ),
-    );
+    setState(() => _isSettingUp = true);
 
-    final location = await LocationService.instance.getCurrentLocation();
-    // Register the building shell first so it exists even with zero floors
-    // (e.g. user backs out of the recording flow) and even without GPS.
-    await ref
-        .read(dashboardProvider.notifier)
-        .registerBuilding(details.name, location);
-    if (location != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-          'building_gps_${details.name}', jsonEncode(location.toJson()));
+    try {
+      final location = await LocationService.instance.getCurrentLocation();
+      // Register the building shell first so it exists even with zero floors
+      // (e.g. user backs out of the recording flow) and even without GPS.
+      await ref
+          .read(dashboardProvider.notifier)
+          .registerBuilding(details.name, location);
+      if (location != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(
+            'building_gps_${details.name}', jsonEncode(location.toJson()));
 
-      unawaited(FirestoreService.instance.saveBuilding(
-        buildingName: details.name,
-        location: location,
-        initialFloor: details.floor,
-      ));
-    } else {
-      unawaited(FirestoreService.instance.saveBuilding(
-        buildingName: details.name,
-        initialFloor: details.floor,
-      ));
-    }
-
-    if (!mounted) return;
-    final saved = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => MappingScreen(
-          mapName: details.name,
-          floor: details.floor,
+        unawaited(FirestoreService.instance.saveBuilding(
+          buildingName: details.name,
           location: location,
+          initialFloor: details.floor,
+        ));
+      } else {
+        unawaited(FirestoreService.instance.saveBuilding(
+          buildingName: details.name,
+          initialFloor: details.floor,
+        ));
+      }
+
+      if (!mounted) return;
+      setState(() => _isSettingUp = false);
+
+      final saved = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MappingScreen(
+            mapName: details.name,
+            floor: details.floor,
+            location: location,
+          ),
         ),
-      ),
-    );
-    if (saved == true && mounted) {
-      ref.read(dashboardProvider.notifier).loadMaps();
+      );
+      if (saved == true && mounted) {
+        ref.read(dashboardProvider.notifier).loadMaps();
+      }
+    } catch (e) {
+      debugPrint('Error setting up building map: $e');
+    } finally {
+      if (mounted && _isSettingUp) {
+        setState(() => _isSettingUp = false);
+      }
     }
   }
 
@@ -138,7 +133,16 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
 
     final dashboardState = ref.read(dashboardProvider);
     BuildingLocation? location = dashboardState.buildingLocations[building];
-    location ??= await LocationService.instance.getCurrentLocation();
+    if (location == null) {
+      setState(() => _isSettingUp = true);
+      try {
+        location = await LocationService.instance.getCurrentLocation();
+      } finally {
+        if (mounted && _isSettingUp) {
+          setState(() => _isSettingUp = false);
+        }
+      }
+    }
 
     if (!mounted) return;
     final saved = await Navigator.push<bool>(
@@ -194,9 +198,13 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
     final grouped = dashboardState.groupedByBuilding;
     final buildingNames = dashboardState.allBuildingNames;
 
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
+    return PopScope(
+      canPop: !_isSettingUp,
+      child: Stack(
+        children: [
+          Scaffold(
+            backgroundColor: Colors.white,
+            appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
         scrolledUnderElevation: 0,
@@ -288,7 +296,7 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                              builder: (_) => const OutdoorMapScreen()),
+                              builder: (_) => const ConnectorLinksScreen()),
                         );
                       },
                       icon: const Icon(CupertinoIcons.circle_grid_hex,
@@ -355,7 +363,11 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
           ],
         ),
       ),
-    );
+    ),
+    if (_isSettingUp) _buildSettingUpOverlay(),
+  ],
+),
+);
   }
 
   Widget _buildMetricsBanner(DashboardState state) {
@@ -484,6 +496,14 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                 onSelected: (value) {
                   if (value == 'edit') {
                     showEditBuildingSheet(context, name);
+                  } else if (value == 'links') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            ConnectorLinksScreen(initialBuilding: name),
+                      ),
+                    );
                   } else if (value == 'delete') {
                     _confirmDeleteBuilding(name, floors.length);
                   }
@@ -497,6 +517,18 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
                             size: 16, color: Color(0xFF27272A)),
                         const SizedBox(width: 10),
                         Text('Edit building',
+                            style: GoogleFonts.inter(fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'links',
+                    child: Row(
+                      children: [
+                        const Icon(CupertinoIcons.circle_grid_hex,
+                            size: 16, color: Color(0xFF27272A)),
+                        const SizedBox(width: 10),
+                        Text('Connector links',
                             style: GoogleFonts.inter(fontSize: 13)),
                       ],
                     ),
@@ -795,6 +827,57 @@ class _AdminStudioScreenState extends ConsumerState<_AdminStudioScreenContent> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSettingUpOverlay() {
+    return Positioned.fill(
+      child: AbsorbPointer(
+        absorbing: true,
+        child: Container(
+          color: Colors.black.withValues(alpha: 0.35),
+          alignment: Alignment.center,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 36),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE4E4E7)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 24,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Text(
+                  'Setting it up...',
+                  style: GoogleFonts.inter(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF18181B),
+                    letterSpacing: -0.2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

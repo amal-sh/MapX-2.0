@@ -108,25 +108,6 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
   void _onBuildingTap(MappedBuilding building) =>
       _showBuildingSheet(building);
 
-  Future<void> _delete(BuildingConnection c) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Remove this link?'),
-        content: Text('${c.a.building} and ${c.b.building} will no longer be routed between.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Remove', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    await _repo.deleteConnection(c);
-    await _load();
-  }
 
   String _describe(BuildingConnection c) {
     final minutes = (c.durationSeconds / 60).ceil();
@@ -289,14 +270,6 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                   title: Text(c.otherEnd(b.name).building),
                   subtitle: Text(
                     'From ${c.entranceIn(b.name).label} to ${c.otherEnd(b.name).label} · ${_describe(c)}',
-                  ),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.link_off, color: Colors.red),
-                    tooltip: 'Remove link',
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _delete(c);
-                    },
                   ),
                 ),
             ],

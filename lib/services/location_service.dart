@@ -37,6 +37,17 @@ class LocationService {
   static final LocationService instance = LocationService._();
   LocationService._();
 
+  BuildingLocation? _cachedLocation;
+
+  /// Returns the most recently fetched GPS fix, if available.
+  BuildingLocation? get cachedLocation => _cachedLocation;
+  BuildingLocation? get lastLocation => _cachedLocation;
+
+  /// Sets or clears the cached location (useful for tests and manual resets).
+  void setCachedLocation(BuildingLocation? loc) {
+    _cachedLocation = loc;
+  }
+
   /// Prompts the user for location permission if not already granted.
   Future<bool> requestPermission() async {
     try {
@@ -89,23 +100,27 @@ class LocationService {
         ),
       );
 
-      return BuildingLocation(
+      final loc = BuildingLocation(
         latitude: position.latitude,
         longitude: position.longitude,
         accuracy: position.accuracy,
         timestamp: position.timestamp,
       );
+      _cachedLocation = loc;
+      return loc;
     } catch (e) {
       debugPrint('Error getting GPS location: $e');
       try {
         final lastKnown = await Geolocator.getLastKnownPosition();
         if (lastKnown != null) {
-          return BuildingLocation(
+          final loc = BuildingLocation(
             latitude: lastKnown.latitude,
             longitude: lastKnown.longitude,
             accuracy: lastKnown.accuracy,
             timestamp: lastKnown.timestamp,
           );
+          _cachedLocation = loc;
+          return loc;
         }
       } catch (_) {}
       return null;
