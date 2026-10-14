@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mapx/screens/dashboard_screen.dart';
 import 'package:mapx/services/geocoding_service.dart';
@@ -185,5 +187,87 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Engineering Quad'), findsOneWidget);
+  });
+
+  testWidgets('Dashboard renders PolylineLayer and door marker when building links exist',
+      (WidgetTester tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      if (methodCall.method == 'checkAvailability') {
+        return 'SUPPORTED_INSTALLED';
+      }
+      return null;
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    await prefs.setString(
+      'map_BlockA#0',
+      jsonEncode({
+        'name': 'BlockA',
+        'floor': 0,
+        'latitude': 12.9716,
+        'longitude': 77.5946,
+        'waypoints': [
+          {
+            'globalStepIndex': 0,
+            'label': 'Door A',
+            'floor': 0,
+            'category': 'entrance',
+            'latitude': 12.9716,
+            'longitude': 77.5946,
+          }
+        ]
+      }),
+    );
+    await prefs.setString(
+      'map_BlockB#0',
+      jsonEncode({
+        'name': 'BlockB',
+        'floor': 0,
+        'latitude': 12.9720,
+        'longitude': 77.5950,
+      }),
+    );
+    await prefs.setString(
+      'building_connections',
+      jsonEncode([
+        {
+          'a': {'building': 'BlockA', 'floor': 0, 'label': 'Door A'},
+          'b': {'building': 'BlockB', 'floor': 0, 'label': 'Door B'},
+          'distanceMeters': 60.0,
+          'durationSeconds': 45.0,
+          'route': [
+            {'lat': 12.9716, 'lng': 77.5946},
+            {'lat': 12.9720, 'lng': 77.5950},
+          ],
+          'source': 'straight',
+        }
+      ]),
+    );
+
+    await GeocodingService.instance.writeCached(
+      'BlockA',
+      12.9716,
+      77.5946,
+      const PlaceName(short: 'Block A', full: 'Block A'),
+    );
+    await GeocodingService.instance.writeCached(
+      'BlockB',
+      12.9720,
+      77.5950,
+      const PlaceName(short: 'Block B', full: 'Block B'),
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: DashboardScreen(),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(find.byType(PolylineLayer), findsOneWidget);
+    expect(find.byIcon(Icons.door_front_door), findsOneWidget);
   });
 }

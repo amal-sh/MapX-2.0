@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../logic/floor_graph.dart';
 import '../models/outdoor_models.dart';
 import '../models/map_models.dart';
+import '../services/building_repository.dart';
 import '../services/firestore_service.dart';
 import '../services/geocoding_service.dart';
 import '../services/location_service.dart';
@@ -160,6 +161,10 @@ class DashboardState {
   final Set<String> knownBuildings;
   /// Real per-floor stats keyed by map key (`map_<building>#<floor>`).
   final Map<String, FloorMapStats> floorStats;
+  /// Stored outdoor connections between buildings.
+  final List<BuildingConnection> connections;
+  /// Entrances mapped across buildings, keyed by building name.
+  final Map<String, List<Waypoint>> buildingEntrances;
   final bool isLoading;
   final bool isSyncing;
   final String? errorMessage;
@@ -170,6 +175,8 @@ class DashboardState {
     this.buildingPlaceNames = const {},
     this.knownBuildings = const {},
     this.floorStats = const {},
+    this.connections = const [],
+    this.buildingEntrances = const {},
     this.isLoading = true,
     this.isSyncing = false,
     this.errorMessage,
@@ -181,6 +188,8 @@ class DashboardState {
     Map<String, String>? buildingPlaceNames,
     Set<String>? knownBuildings,
     Map<String, FloorMapStats>? floorStats,
+    List<BuildingConnection>? connections,
+    Map<String, List<Waypoint>>? buildingEntrances,
     bool? isLoading,
     bool? isSyncing,
     String? errorMessage,
@@ -191,10 +200,29 @@ class DashboardState {
       buildingPlaceNames: buildingPlaceNames ?? this.buildingPlaceNames,
       knownBuildings: knownBuildings ?? this.knownBuildings,
       floorStats: floorStats ?? this.floorStats,
+      connections: connections ?? this.connections,
+      buildingEntrances: buildingEntrances ?? this.buildingEntrances,
       isLoading: isLoading ?? this.isLoading,
       isSyncing: isSyncing ?? this.isSyncing,
       errorMessage: errorMessage,
     );
+  }
+
+  /// All unique entrance waypoints across all buildings that have GPS coordinates.
+  List<Waypoint> get entrancesWithGps {
+    final seen = <String>{};
+    final result = <Waypoint>[];
+    for (final entry in buildingEntrances.entries) {
+      for (final e in entry.value) {
+        if (e.hasGps) {
+          final key = '${entry.key}_${e.floor}_${e.label}_${e.latitude}_${e.longitude}';
+          if (seen.add(key)) {
+            result.add(e);
+          }
+        }
+      }
+    }
+    return result;
   }
 
   /// Groups map entries by building name, sorted ascending by floor.
@@ -264,6 +292,7 @@ class DashboardNotifier extends Notifier<DashboardState> {
     final entries = <BuildingMapEntry>[];
     final locations = <String, BuildingLocation>{};
     final stats = <String, FloorMapStats>{};
+    final buildingEntrances = <String, List<Waypoint>>{};
 
     for (final key in prefs.getKeys().where((k) => k.startsWith('map_'))) {
       try {
@@ -280,6 +309,15 @@ class DashboardNotifier extends Notifier<DashboardState> {
         ));
         stats[key] = FloorMapStats.fromPayload(data);
 
+        for (final w in (data['waypoints'] as List? ?? const [])) {
+          try {
+            final wp = Waypoint.fromJson(Map<String, dynamic>.from(w as Map));
+            if (wp.isEntrance) {
+              buildingEntrances.putIfAbsent(name, () => []).add(wp);
+            }
+          } catch (_) {}
+        }
+
         if (data['latitude'] != null && data['longitude'] != null && !locations.containsKey(name)) {
           locations[name] = BuildingLocation(
             latitude: (data['latitude'] as num).toDouble(),
@@ -288,6 +326,16 @@ class DashboardNotifier extends Notifier<DashboardState> {
             timestamp: DateTime.tryParse(data['timestamp'] as String? ?? '') ?? DateTime.now(),
           );
         }
+      } catch (_) {}
+    }
+
+    // Load connections between buildings (from Firestore / SharedPreferences cache)
+    List<BuildingConnection> connections = const [];
+    try {
+      connections = await BuildingRepository.instance.loadConnections(sync: true);
+    } catch (_) {
+      try {
+        connections = _readConnections(prefs);
       } catch (_) {}
     }
 
@@ -318,6 +366,7 @@ class DashboardNotifier extends Notifier<DashboardState> {
       entries.removeWhere((e) => tombstoned.contains(e.name));
       stats.removeWhere((key, _) => tombstoned.any((n) => key.startsWith('map_$n#')));
       locations.removeWhere((name, _) => tombstoned.contains(name));
+      buildingEntrances.removeWhere((name, _) => tombstoned.contains(name));
       registry.removeAll(tombstoned);
     }
     await prefs.setString(registryKey, jsonEncode(registry.toList()));
@@ -352,6 +401,8 @@ class DashboardNotifier extends Notifier<DashboardState> {
       buildingPlaceNames: places,
       knownBuildings: registry,
       floorStats: stats,
+      connections: connections,
+      buildingEntrances: buildingEntrances,
       isLoading: false,
       isSyncing: false,
     );

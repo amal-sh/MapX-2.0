@@ -379,8 +379,65 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
                     ),
                     children: [
                       basemapTileLayer(basemapTheme),
+                      if (dashboardState.connections.isNotEmpty)
+                        PolylineLayer(
+                          polylines: [
+                            // Casing under each route so the line reads on the
+                            // basemap (polished nav look). Colors invert with
+                            // the light/dark theme.
+                            for (final c in dashboardState.connections)
+                              Polyline(
+                                points: [
+                                  for (final p in c.route) LatLng(p.$1, p.$2)
+                                ],
+                                strokeWidth: 8,
+                                color: isDark
+                                    ? const Color(0xFF18181B)
+                                    : Colors.white,
+                                pattern: c.source == 'straight'
+                                    ? StrokePattern.dashed(
+                                        segments: const [12, 8])
+                                    : const StrokePattern.solid(),
+                              ),
+                            for (final c in dashboardState.connections)
+                              Polyline(
+                                points: [
+                                  for (final p in c.route) LatLng(p.$1, p.$2)
+                                ],
+                                strokeWidth: 5,
+                                color: isDark
+                                    ? Colors.white
+                                    : Colors.black,
+                                pattern: c.source == 'straight'
+                                    ? StrokePattern.dashed(
+                                        segments: const [12, 8])
+                                    : const StrokePattern.solid(),
+                              ),
+                          ],
+                        ),
                       MarkerLayer(
                         markers: [
+                          for (final e in dashboardState.entrancesWithGps)
+                            Marker(
+                              point: LatLng(e.latitude!, e.longitude!),
+                              width: 22,
+                              height: 22,
+                              child: const DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Color(0xFF18181B),
+                                      blurRadius: 0,
+                                      spreadRadius: 1,
+                                    ),
+                                  ],
+                                ),
+                                child: Icon(Icons.door_front_door,
+                                    size: 15, color: Colors.black),
+                              ),
+                            ),
                           for (final entry in dashboardState
                               .buildingLocations.entries)
                             Marker(

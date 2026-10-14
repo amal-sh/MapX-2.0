@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mapx/models/map_models.dart';
@@ -62,6 +63,59 @@ void main() {
 
       expect(notifier.exists('AcademicBlock', 0), isTrue);
       expect(notifier.exists('AcademicBlock', 2), isFalse);
+    });
+
+    test('loads connections and entrance waypoints', () async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      await prefs.setString(
+        'map_AcademicBlock#0',
+        jsonEncode({
+          'name': 'AcademicBlock',
+          'floor': 0,
+          'latitude': 12.9716,
+          'longitude': 77.5946,
+          'waypoints': [
+            {
+              'globalStepIndex': 0,
+              'label': 'Main Gate',
+              'floor': 0,
+              'category': 'entrance',
+              'latitude': 12.9716,
+              'longitude': 77.5946,
+            }
+          ]
+        }),
+      );
+      await prefs.setString(
+        'building_connections',
+        jsonEncode([
+          {
+            'a': {'building': 'AcademicBlock', 'floor': 0, 'label': 'Main Gate'},
+            'b': {'building': 'Library', 'floor': 0, 'label': 'North Gate'},
+            'distanceMeters': 120.0,
+            'durationSeconds': 90.0,
+            'route': [
+              {'lat': 12.9716, 'lng': 77.5946},
+              {'lat': 12.9720, 'lng': 77.5950},
+            ],
+            'source': 'straight',
+          }
+        ]),
+      );
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final notifier = container.read(dashboardProvider.notifier);
+      await notifier.loadMaps();
+
+      final state = container.read(dashboardProvider);
+      expect(state.connections.length, 1);
+      expect(state.connections.first.distanceMeters, 120.0);
+      expect(state.connections.first.route.length, 2);
+      expect(state.entrancesWithGps.length, 1);
+      expect(state.entrancesWithGps.first.label, 'Main Gate');
     });
   });
 
