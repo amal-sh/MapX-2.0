@@ -189,6 +189,15 @@ void main() {
       var conns =
           jsonDecode(prefs.getString('building_connections')!) as List;
       expect((conns.first as Map)['a']['building'], 'Tower');
+      expect(prefs.containsKey('map_Hall#0'), isFalse);
+      expect(prefs.containsKey('map_Tower#0'), isTrue);
+      expect(container.read(dashboardProvider).allBuildingNames, contains('Tower'));
+      expect(container.read(dashboardProvider).allBuildingNames, isNot(contains('Hall')));
+
+      // Subsequent loadMaps does NOT resurrect Hall
+      await notifier.loadMaps();
+      expect(container.read(dashboardProvider).allBuildingNames, contains('Tower'));
+      expect(container.read(dashboardProvider).allBuildingNames, isNot(contains('Hall')));
 
       await notifier.deleteBuilding('Tower');
       prefs = await SharedPreferences.getInstance();
@@ -197,6 +206,36 @@ void main() {
       expect(
           container.read(dashboardProvider).allBuildingNames,
           isNot(contains('Tower')));
+
+      // Subsequent loadMaps does NOT resurrect Tower
+      await notifier.loadMaps();
+      expect(
+          container.read(dashboardProvider).allBuildingNames,
+          isNot(contains('Tower')));
+    });
+
+    test('rename handles legacy keys without hash correctly', () async {
+      SharedPreferences.setMockInitialValues({
+        'map_OldHall': mapPayload('OldHall', 0),
+        'building_registry': '["OldHall"]',
+      });
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(dashboardProvider.notifier);
+      await notifier.loadMaps();
+
+      expect(container.read(dashboardProvider).allBuildingNames, contains('OldHall'));
+
+      expect(await notifier.renameBuilding('OldHall', 'NewHall'), isTrue);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.containsKey('map_OldHall'), isFalse);
+      expect(prefs.containsKey('map_NewHall#0'), isTrue);
+      expect(container.read(dashboardProvider).allBuildingNames, contains('NewHall'));
+      expect(container.read(dashboardProvider).allBuildingNames, isNot(contains('OldHall')));
+
+      await notifier.loadMaps();
+      expect(container.read(dashboardProvider).allBuildingNames, contains('NewHall'));
+      expect(container.read(dashboardProvider).allBuildingNames, isNot(contains('OldHall')));
     });
   });
 }

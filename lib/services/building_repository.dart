@@ -78,7 +78,13 @@ class BuildingRepository {
     final entrances = <String, List<Waypoint>>{};
     final locations = <String, GeoPoint>{};
 
+    final tombstoned = {
+      for (final k in prefs.getKeys().where((k) => k.startsWith('building_tombstone_')))
+        k.substring('building_tombstone_'.length),
+    };
+
     for (final key in prefs.getKeys().where((k) => k.startsWith('map_'))) {
+      if (prefs.containsKey('map_tombstone_$key')) continue;
       final Map data;
       try {
         data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
@@ -89,6 +95,8 @@ class BuildingRepository {
       final name = (rawName != null && rawName.isNotEmpty)
           ? rawName
           : key.substring(4).split('#').first.trim();
+      if (tombstoned.contains(name)) continue;
+
       final floor = data['floor'] as int? ?? 0;
       floors.putIfAbsent(name, () => {})[floor] = key;
       for (final w in (data['waypoints'] as List? ?? const [])) {
@@ -102,7 +110,8 @@ class BuildingRepository {
       }
     }
     for (final key in prefs.getKeys().where((k) => k.startsWith('building_gps_'))) {
-      final name = key.substring('building_gps_'.length);
+      final name = key.substring('building_gps_'.length).trim();
+      if (tombstoned.contains(name)) continue;
       try {
         final loc = jsonDecode(prefs.getString(key)!) as Map;
         locations.putIfAbsent(name, () => ((loc['latitude'] as num).toDouble(), (loc['longitude'] as num).toDouble()));

@@ -310,10 +310,28 @@ class DashboardNotifier extends Notifier<DashboardState> {
     final stats = <String, FloorMapStats>{};
     final buildingEntrances = <String, List<Waypoint>>{};
 
+    // Tombstones win: names deleted/renamed on this device stay deleted
+    final tombstoned = {
+      for (final k in prefs.getKeys().where((k) => k.startsWith(_tombstonePrefix)))
+        k.substring(_tombstonePrefix.length),
+    };
+
     for (final key in prefs.getKeys().where((k) => k.startsWith('map_'))) {
+      if (prefs.containsKey('map_tombstone_$key')) {
+        await prefs.remove(key);
+        continue;
+      }
       try {
         final data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
-        final name = data['name'] as String? ?? key.substring(4);
+        final rawName = (data['name'] as String?)?.trim();
+        final name = (rawName != null && rawName.isNotEmpty)
+            ? rawName
+            : key.substring(4).split('#').first.trim();
+        if (tombstoned.contains(name)) {
+          await prefs.remove(key);
+          continue;
+        }
+
         final floor = data['floor'] as int?;
         final label = (data['label'] as String?)?.trim();
 
@@ -357,7 +375,11 @@ class DashboardNotifier extends Notifier<DashboardState> {
 
     // Also check building_gps_ cache
     for (final key in prefs.getKeys().where((k) => k.startsWith('building_gps_'))) {
-      final bName = key.substring('building_gps_'.length);
+      final bName = key.substring('building_gps_'.length).trim();
+      if (tombstoned.contains(bName)) {
+        await prefs.remove(key);
+        continue;
+      }
       if (!locations.containsKey(bName)) {
         try {
           final locData = jsonDecode(prefs.getString(key)!) as Map<String, dynamic>;
@@ -372,18 +394,21 @@ class DashboardNotifier extends Notifier<DashboardState> {
     // so a restart never drops an empty building.
     registry.addAll([for (final e in entries) e.name, ...locations.keys]);
 
-    // Tombstones win: names deleted on this device stay deleted even if
-    // the cloud still serves them (remote delete pending or offline).
-    final tombstoned = {
-      for (final k in prefs.getKeys().where((k) => k.startsWith(_tombstonePrefix)))
-        k.substring(_tombstonePrefix.length),
-    };
     if (tombstoned.isNotEmpty) {
       entries.removeWhere((e) => tombstoned.contains(e.name));
-      stats.removeWhere((key, _) => tombstoned.any((n) => key.startsWith('map_$n#')));
+      stats.removeWhere((key, _) =>
+          tombstoned.any((n) => key.startsWith('map_$n#') || key == 'map_$n'));
       locations.removeWhere((name, _) => tombstoned.contains(name));
       buildingEntrances.removeWhere((name, _) => tombstoned.contains(name));
       registry.removeAll(tombstoned);
+
+      for (final t in tombstoned) {
+        for (final k in prefs.getKeys().where((k) => k.startsWith('map_$t#') || k == 'map_$t')) {
+          await prefs.remove(k);
+        }
+        await prefs.remove('building_gps_$t');
+        await prefs.remove(GeocodingService.cacheKey(t));
+      }
     }
     await prefs.setString(registryKey, jsonEncode(registry.toList()));
 
@@ -513,6 +538,8 @@ class DashboardNotifier extends Notifier<DashboardState> {
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(key);
+    await prefs.setString(
+        'map_tombstone_$key', DateTime.now().toIso8601String());
 
     if (entry != null) {
       try {
@@ -558,7 +585,14 @@ class DashboardNotifier extends Notifier<DashboardState> {
     final renamedEntries = [
       for (final e in state.entries)
         e.name == from
-            ? BuildingMapEntry(key: e.key.replaceFirst('map_$from#', 'map_$to#'), name: to, floor: e.floor, label: e.label)
+            ? BuildingMapEntry(
+                key: e.key.startsWith('map_$from#')
+                    ? e.key.replaceFirst('map_$from#', 'map_$to#')
+                    : 'map_$to#${e.floor ?? 0}',
+                name: to,
+                floor: e.floor,
+                label: e.label,
+              )
             : e,
     ];
     final renamedLocations =
@@ -572,8 +606,13 @@ class DashboardNotifier extends Notifier<DashboardState> {
     state.floorStats.forEach((key, value) {
       renamedStats[key.startsWith('map_$from#')
           ? key.replaceFirst('map_$from#', 'map_$to#')
-          : key] = value;
+          : (key == 'map_$from' ? 'map_$to#0' : key)] = value;
     });
+    final renamedEntrances =
+        Map<String, List<Waypoint>>.from(state.buildingEntrances);
+    final movedEntrances = renamedEntrances.remove(from);
+    if (movedEntrances != null) renamedEntrances[to] = movedEntrances;
+
     state = state.copyWith(
       entries: renamedEntries,
       buildingLocations: renamedLocations,
@@ -581,41 +620,72 @@ class DashboardNotifier extends Notifier<DashboardState> {
         ..remove(from),
       knownBuildings: renamedKnown,
       floorStats: renamedStats,
+      buildingEntrances: renamedEntrances,
       isSyncing: true,
     );
 
     final prefs = await SharedPreferences.getInstance();
     // Renaming onto a previously-deleted name revives it.
     await prefs.remove('$_tombstonePrefix$to');
+    // Tombstone the old name so cloud sync and local reconciler never resurrect it!
+    await prefs.setString(
+        '$_tombstonePrefix$from', DateTime.now().toIso8601String());
 
-    // Migrate every floor payload + key: map_<old>#<floor> -> map_<new>#<floor>.
-    final floorKeys = prefs
-        .getKeys()
-        .where((k) => k.startsWith('map_$from#'))
-        .toList();
+    // Find ALL local floor keys for `from`:
+    // 1. Starting with 'map_$from#'
+    // 2. Exactly 'map_$from'
+    // 3. Any 'map_' key whose decoded payload has name == from
+    final allKeys = prefs.getKeys().where((k) => k.startsWith('map_')).toList();
+    final matchingFloorKeys = <String>{};
+    for (final k in allKeys) {
+      if (k.startsWith('map_$from#') || k == 'map_$from') {
+        matchingFloorKeys.add(k);
+        continue;
+      }
+      try {
+        final raw = prefs.getString(k);
+        if (raw != null) {
+          final data = jsonDecode(raw) as Map;
+          if ((data['name'] as String?)?.trim() == from) {
+            matchingFloorKeys.add(k);
+          }
+        }
+      } catch (_) {}
+    }
+
     final remoteOps = <Future>[];
-    for (final oldKey in floorKeys) {
+    for (final oldKey in matchingFloorKeys) {
       final raw = prefs.getString(oldKey);
-      final suffix = oldKey.substring('map_$from#'.length);
-      final newKey = 'map_$to#$suffix';
+      int floor = 0;
+      if (oldKey.startsWith('map_$from#')) {
+        floor = int.tryParse(oldKey.substring('map_$from#'.length)) ?? 0;
+      } else {
+        try {
+          final data = jsonDecode(raw ?? '{}') as Map;
+          floor = (data['floor'] as int?) ?? 0;
+        } catch (_) {}
+      }
+      final newKey = 'map_$to#$floor';
       if (raw != null) {
         try {
           final data = Map<String, dynamic>.from(
               jsonDecode(raw) as Map);
           data['name'] = to;
+          data['key'] = newKey;
+          data['floor'] = floor;
           await prefs.setString(newKey, jsonEncode(data));
         } catch (_) {
           await prefs.setString(newKey, raw);
         }
       }
       await prefs.remove(oldKey);
-      final floor = int.tryParse(suffix);
+
       remoteOps.add(_firestore.renameFloorMap(
         oldMapKey: oldKey,
         newMapKey: newKey,
         oldBuilding: from,
         newBuilding: to,
-        floor: floor ?? 0,
+        floor: floor,
       ).catchError((_) {}));
     }
 
@@ -676,7 +746,10 @@ class DashboardNotifier extends Notifier<DashboardState> {
       knownBuildings: Set<String>.from(state.knownBuildings)
         ..remove(trimmed),
       floorStats: Map<String, FloorMapStats>.from(state.floorStats)
-        ..removeWhere((key, _) => key.startsWith('map_$trimmed#')),
+        ..removeWhere((key, _) =>
+            key.startsWith('map_$trimmed#') || key == 'map_$trimmed'),
+      buildingEntrances: Map<String, List<Waypoint>>.from(state.buildingEntrances)
+        ..remove(trimmed),
       isSyncing: true,
     );
 
@@ -684,10 +757,27 @@ class DashboardNotifier extends Notifier<DashboardState> {
     // resurrecting the building when the remote delete hasn't landed yet
     // (or this device is offline).
     final prefs = await SharedPreferences.getInstance();
-    final floorKeys = prefs
-        .getKeys()
-        .where((k) => k.startsWith('map_$trimmed#'))
-        .toList();
+    await prefs.setString(
+        '$_tombstonePrefix$trimmed', DateTime.now().toIso8601String());
+
+    final allMapKeys =
+        prefs.getKeys().where((k) => k.startsWith('map_')).toList();
+    final floorKeys = <String>{};
+    for (final k in allMapKeys) {
+      if (k.startsWith('map_$trimmed#') || k == 'map_$trimmed') {
+        floorKeys.add(k);
+        continue;
+      }
+      try {
+        final raw = prefs.getString(k);
+        if (raw != null) {
+          final data = jsonDecode(raw) as Map;
+          if ((data['name'] as String?)?.trim() == trimmed) {
+            floorKeys.add(k);
+          }
+        }
+      } catch (_) {}
+    }
     for (final key in floorKeys) {
       await prefs.remove(key);
     }
@@ -696,14 +786,23 @@ class DashboardNotifier extends Notifier<DashboardState> {
     final registry = _decodeRegistry(prefs.getString(registryKey))
       ..remove(trimmed);
     await prefs.setString(registryKey, jsonEncode(registry.toList()));
-    await prefs.setString(
-        '$_tombstonePrefix$trimmed', DateTime.now().toIso8601String());
 
     // 3. Remote deletes — awaited so the reconciling loadMaps() below
     // can't re-pull the just-deleted building from Firestore.
     final remoteDeletes = <Future>[];
     for (final key in floorKeys) {
-      final floor = int.tryParse(key.substring('map_$trimmed#'.length)) ?? 0;
+      int floor = 0;
+      if (key.startsWith('map_$trimmed#')) {
+        floor = int.tryParse(key.substring('map_$trimmed#'.length)) ?? 0;
+      } else {
+        try {
+          final raw = prefs.getString(key);
+          if (raw != null) {
+            final data = jsonDecode(raw) as Map;
+            floor = (data['floor'] as int?) ?? 0;
+          }
+        } catch (_) {}
+      }
       remoteDeletes.add(_firestore.deleteMap(
         mapKey: key,
         buildingName: trimmed,

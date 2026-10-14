@@ -34,6 +34,14 @@ class FirestoreService {
       final col = _buildingsCol;
       if (col == null) return;
 
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('building_tombstone_$buildingName');
+      } catch (_) {}
+      try {
+        await _firestore?.collection('deleted_buildings').doc(buildingName).delete();
+      } catch (_) {}
+
       final docRef = col.doc(buildingName);
       final doc = await docRef.get();
 
@@ -78,6 +86,15 @@ class FirestoreService {
       final maps = _mapsCol;
       final buildings = _buildingsCol;
       if (maps == null || buildings == null) return;
+
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('map_tombstone_$mapKey');
+        await prefs.remove('building_tombstone_$buildingName');
+      } catch (_) {}
+      try {
+        await _firestore?.collection('deleted_buildings').doc(buildingName).delete();
+      } catch (_) {}
 
       final payload = Map<String, dynamic>.from(mapData);
       payload['key'] = mapKey;
@@ -174,19 +191,29 @@ class FirestoreService {
     try {
       final maps = _mapsCol;
       final buildings = _buildingsCol;
-      if (maps == null || buildings == null) return;
 
-      final floorsSnap =
-          await buildings.doc(buildingName).collection('floors').get();
-      for (final doc in floorsSnap.docs) {
-        await doc.reference.delete();
+      // 1. Record deletion in deleted_buildings for multi-device sync
+      try {
+        await _firestore?.collection('deleted_buildings').doc(buildingName).set({
+          'deletedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
+
+      if (buildings != null) {
+        final floorsSnap =
+            await buildings.doc(buildingName).collection('floors').get();
+        for (final doc in floorsSnap.docs) {
+          await doc.reference.delete();
+        }
+        await buildings.doc(buildingName).delete();
       }
-      final mapsSnap =
-          await maps.where('name', isEqualTo: buildingName).get();
-      for (final doc in mapsSnap.docs) {
-        await doc.reference.delete();
+      if (maps != null) {
+        final mapsSnap =
+            await maps.where('name', isEqualTo: buildingName).get();
+        for (final doc in mapsSnap.docs) {
+          await doc.reference.delete();
+        }
       }
-      await buildings.doc(buildingName).delete();
       debugPrint('Firestore: Deleted building "$buildingName".');
     } catch (e) {
       debugPrint('Firestore: Error deleting building "$buildingName": $e');
@@ -194,7 +221,7 @@ class FirestoreService {
   }
 
   /// Renames a building doc (and its `floors` subcollection) to [newName].
-  /// Per-floor top-level `maps` docs are migrated by [renameFloorMap].
+  /// Per-floor top-level `maps` docs are migrated as well.
   Future<void> renameBuilding({
     required String oldName,
     required String newName,
@@ -202,30 +229,57 @@ class FirestoreService {
   }) async {
     try {
       final buildings = _buildingsCol;
-      if (buildings == null) return;
+      final maps = _mapsCol;
 
-      final oldRef = buildings.doc(oldName);
-      final newRef = buildings.doc(newName);
-      final oldDoc = await oldRef.get();
+      // 1. Record rename in deleted_buildings for multi-device sync
+      try {
+        await _firestore?.collection('deleted_buildings').doc(oldName).set({
+          'deletedAt': FieldValue.serverTimestamp(),
+          'renamedTo': newName,
+        });
+        await _firestore?.collection('deleted_buildings').doc(newName).delete();
+      } catch (_) {}
 
-      final base = oldDoc.exists
-          ? Map<String, dynamic>.from(oldDoc.data()!)
-          : <String, dynamic>{};
-      base['name'] = newName;
-      base['renamedFrom'] = oldName;
-      base['updatedAt'] = FieldValue.serverTimestamp();
-      if (base['createdAt'] == null) {
-        base['createdAt'] = FieldValue.serverTimestamp();
+      // 2. Rename all maps in the top-level maps collection
+      if (maps != null) {
+        final mapsSnap = await maps.where('name', isEqualTo: oldName).get();
+        for (final doc in mapsSnap.docs) {
+          final data = Map<String, dynamic>.from(doc.data());
+          final floor = data['floor'] ?? 0;
+          final newMapKey = 'map_$newName#$floor';
+          data['name'] = newName;
+          data['key'] = newMapKey;
+          data['updatedAt'] = FieldValue.serverTimestamp();
+          await maps.doc(newMapKey).set(data, SetOptions(merge: true));
+          await doc.reference.delete();
+        }
       }
-      await newRef.set(base, SetOptions(merge: true));
 
-      final floorsSnap = await oldRef.collection('floors').get();
-      for (final doc in floorsSnap.docs) {
-        final data = Map<String, dynamic>.from(doc.data())..['name'] = newName;
-        await newRef.collection('floors').doc(doc.id).set(data);
-        await doc.reference.delete();
+      // 3. Rename in buildings collection
+      if (buildings != null) {
+        final oldRef = buildings.doc(oldName);
+        final newRef = buildings.doc(newName);
+        final oldDoc = await oldRef.get();
+
+        final base = oldDoc.exists
+            ? Map<String, dynamic>.from(oldDoc.data()!)
+            : <String, dynamic>{};
+        base['name'] = newName;
+        base['renamedFrom'] = oldName;
+        base['updatedAt'] = FieldValue.serverTimestamp();
+        if (base['createdAt'] == null) {
+          base['createdAt'] = FieldValue.serverTimestamp();
+        }
+        await newRef.set(base, SetOptions(merge: true));
+
+        final floorsSnap = await oldRef.collection('floors').get();
+        for (final doc in floorsSnap.docs) {
+          final data = Map<String, dynamic>.from(doc.data())..['name'] = newName;
+          await newRef.collection('floors').doc(doc.id).set(data);
+          await doc.reference.delete();
+        }
+        await oldRef.delete();
       }
-      if (oldDoc.exists) await oldRef.delete();
       debugPrint('Firestore: Renamed building "$oldName" -> "$newName".');
     } catch (e) {
       debugPrint('Firestore: Error renaming building "$oldName": $e');
@@ -274,13 +328,51 @@ class FirestoreService {
     }
   }
 
-  /// Syncs remote maps from Firestore down to local SharedPreferences if not already present.
+  /// Syncs remote maps from Firestore down to local SharedPreferences.
+  /// Updates modified maps, removes deleted/renamed buildings, and adds new maps.
   Future<int> syncFromFirestore() async {
     try {
       final maps = _mapsCol;
+      final buildings = _buildingsCol;
       if (maps == null) return 0;
 
       final prefs = await SharedPreferences.getInstance();
+
+      // 1. Pull remote deleted_buildings (if any) and tombstone/clean them locally
+      try {
+        final delSnap = await _firestore?.collection('deleted_buildings').get();
+        if (delSnap != null) {
+          for (final doc in delSnap.docs) {
+            final delName = doc.id.trim();
+            final data = doc.data();
+            final renamedTo = (data['renamedTo'] as String?)?.trim();
+            await prefs.setString(
+                'building_tombstone_$delName', DateTime.now().toIso8601String());
+
+            final matchingKeys = prefs
+                .getKeys()
+                .where((k) =>
+                    k.startsWith('map_$delName#') || k == 'map_$delName')
+                .toList();
+            for (final k in matchingKeys) {
+              await prefs.remove(k);
+            }
+            await prefs.remove('building_gps_$delName');
+            await prefs.remove('building_place_$delName');
+
+            final rawReg = prefs.getString('building_registry');
+            final reg = <String>{
+              if (rawReg != null && rawReg.isNotEmpty)
+                for (final e in (jsonDecode(rawReg) as List)) e.toString(),
+            }..remove(delName);
+            if (renamedTo != null && renamedTo.isNotEmpty) {
+              reg.add(renamedTo);
+            }
+            await prefs.setString('building_registry', jsonEncode(reg.toList()));
+          }
+        }
+      } catch (_) {}
+
       // Names deleted on this device: never re-pull them from the cloud.
       final tombstoned = {
         for (final k in prefs
@@ -288,61 +380,92 @@ class FirestoreService {
             .where((k) => k.startsWith('building_tombstone_')))
           k.substring('building_tombstone_'.length),
       };
+
       final snapshot = await maps.get();
       int syncedCount = 0;
 
       for (final doc in snapshot.docs) {
         final data = doc.data();
-        final docBuilding = data['name'] as String?;
+        final docBuilding = (data['name'] as String?)?.trim();
         if (docBuilding != null && tombstoned.contains(docBuilding)) continue;
-        final key = data['key'] as String? ?? 'map_${data['name']}#${data['floor']}';
-        if (!prefs.containsKey(key)) {
-          // Clean non-serializable fields if any before caching locally
-          final cleanData = Map<String, dynamic>.from(data)
-            ..remove('updatedAt')
-            ..remove('createdAt');
-          await prefs.setString(key, jsonEncode(cleanData));
+        final floor = (data['floor'] as int?) ?? 0;
+        final key = data['key'] as String? ?? 'map_$docBuilding#$floor';
+        if (prefs.containsKey('map_tombstone_$key')) continue;
+
+        // Clean non-serializable fields if any before caching locally
+        final cleanData = Map<String, dynamic>.from(data)
+          ..remove('updatedAt')
+          ..remove('createdAt');
+        final encodedRemote = jsonEncode(cleanData);
+        final localRaw = prefs.getString(key);
+
+        if (localRaw == null) {
+          await prefs.setString(key, encodedRemote);
+          syncedCount++;
+        } else if (localRaw != encodedRemote) {
+          // Map was edited in Firestore: update local cache!
+          await prefs.setString(key, encodedRemote);
           syncedCount++;
         }
       }
 
       // Also pull building shells so buildings with zero floors still show
-      // up locally (registry + GPS cache). Fail-soft when offline.
-      try {
-        final buildings = _buildingsCol;
-        if (buildings != null) {
-          final bSnap = await buildings.get();
-          final rawReg = prefs.getString('building_registry');
-          final registry = <String>{
-            if (rawReg != null && rawReg.isNotEmpty)
-              for (final e in (jsonDecode(rawReg) as List)) e.toString(),
-          };
-          var regChanged = false;
-          for (final doc in bSnap.docs) {
-            final data = doc.data();
-            final bName = (data['name'] as String?) ?? doc.id;
-            if (tombstoned.contains(bName)) continue;
-            if (registry.add(bName)) regChanged = true;
-            if (!prefs.containsKey('building_gps_$bName') &&
-                data['latitude'] is num &&
-                data['longitude'] is num) {
-              await prefs.setString(
-                  'building_gps_$bName',
-                  jsonEncode({
-                    'latitude': (data['latitude'] as num).toDouble(),
-                    'longitude': (data['longitude'] as num).toDouble(),
-                    'accuracy': (data['accuracy'] as num?)?.toDouble() ?? 0.0,
-                    'timestamp': data['locationRecordedAt'] as String? ??
-                        DateTime.now().toIso8601String(),
-                  }));
+      // up locally (registry + GPS cache).
+      if (buildings != null) {
+        final bSnap = await buildings.get();
+        final rawReg = prefs.getString('building_registry');
+        final registry = <String>{
+          if (rawReg != null && rawReg.isNotEmpty)
+            for (final e in (jsonDecode(rawReg) as List)) e.toString(),
+        };
+        var regChanged = false;
+        for (final doc in bSnap.docs) {
+          final data = doc.data();
+          final bName = ((data['name'] as String?) ?? doc.id).trim();
+          if (tombstoned.contains(bName)) continue;
+
+          // Check if building was renamed
+          final renamedFrom = (data['renamedFrom'] as String?)?.trim();
+          if (renamedFrom != null && renamedFrom.isNotEmpty) {
+            await prefs.setString(
+                'building_tombstone_$renamedFrom',
+                DateTime.now().toIso8601String());
+            tombstoned.add(renamedFrom);
+            if (registry.remove(renamedFrom)) regChanged = true;
+            final oldKeys = prefs
+                .getKeys()
+                .where((k) =>
+                    k.startsWith('map_$renamedFrom#') ||
+                    k == 'map_$renamedFrom')
+                .toList();
+            for (final k in oldKeys) {
+              await prefs.remove(k);
+            }
+            await prefs.remove('building_gps_$renamedFrom');
+            await prefs.remove('building_place_$renamedFrom');
+          }
+
+          if (registry.add(bName)) regChanged = true;
+
+          // Update GPS if remote has coordinates
+          if (data['latitude'] is num && data['longitude'] is num) {
+            final locPayload = jsonEncode({
+              'latitude': (data['latitude'] as num).toDouble(),
+              'longitude': (data['longitude'] as num).toDouble(),
+              'accuracy': (data['accuracy'] as num?)?.toDouble() ?? 0.0,
+              'timestamp': data['locationRecordedAt'] as String? ??
+                  DateTime.now().toIso8601String(),
+            });
+            if (prefs.getString('building_gps_$bName') != locPayload) {
+              await prefs.setString('building_gps_$bName', locPayload);
             }
           }
-          if (regChanged) {
-            await prefs.setString(
-                'building_registry', jsonEncode(registry.toList()));
-          }
         }
-      } catch (_) {}
+        if (regChanged) {
+          await prefs.setString(
+              'building_registry', jsonEncode(registry.toList()));
+        }
+      }
 
       return syncedCount;
     } catch (e) {

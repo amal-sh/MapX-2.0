@@ -39,9 +39,15 @@ class SearchService {
     userLoc ??= await LocationService.instance.getCurrentLocation();
 
     // 2. Discover building coordinates from building_gps_ cache
+    final tombstoned = {
+      for (final k in prefs.getKeys().where((k) => k.startsWith('building_tombstone_')))
+        k.substring('building_tombstone_'.length),
+    };
+
     final buildingCoords = <String, ({double lat, double lng})>{};
     for (final key in prefs.getKeys().where((k) => k.startsWith('building_gps_'))) {
-      final name = key.substring('building_gps_'.length);
+      final name = key.substring('building_gps_'.length).trim();
+      if (tombstoned.contains(name)) continue;
       try {
         final locData = jsonDecode(prefs.getString(key)!) as Map<String, dynamic>;
         buildingCoords[name] = (
@@ -57,9 +63,14 @@ class SearchService {
     final buildingPrimaryMap = <String, String>{};
 
     for (final key in prefs.getKeys().where((k) => k.startsWith('map_'))) {
+      if (prefs.containsKey('map_tombstone_$key')) continue;
       try {
         final data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
-        final buildingName = data['name'] as String? ?? key.substring(4);
+        final rawName = (data['name'] as String?)?.trim();
+        final buildingName = (rawName != null && rawName.isNotEmpty)
+            ? rawName
+            : key.substring(4).split('#').first.trim();
+        if (tombstoned.contains(buildingName)) continue;
         final floor = data['floor'] as int? ?? 0;
 
         // If coordinates embedded in map, cache if not already found
