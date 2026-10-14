@@ -270,4 +270,79 @@ void main() {
     expect(find.byType(PolylineLayer), findsOneWidget);
     expect(find.byIcon(Icons.door_front_door), findsOneWidget);
   });
+
+  testWidgets(
+      'Dashboard bottom sheet counts only buildings within 1 km radius for Complexes Near You',
+      (WidgetTester tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      if (methodCall.method == 'checkAvailability') {
+        return 'SUPPORTED_INSTALLED';
+      }
+      return null;
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+
+    // Building 1: Near (within 100m of user)
+    await prefs.setString(
+      'map_NearBuilding#0',
+      jsonEncode({
+        'name': 'NearBuilding',
+        'floor': 0,
+        'latitude': 12.9716,
+        'longitude': 77.5946,
+      }),
+    );
+
+    // Building 2: Far (over 50 km away)
+    await prefs.setString(
+      'map_FarBuilding#0',
+      jsonEncode({
+        'name': 'FarBuilding',
+        'floor': 0,
+        'latitude': 13.5000,
+        'longitude': 78.5000,
+      }),
+    );
+
+    // Set user position in geolocator mock near NearBuilding (12.9716, 77.5946)
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(geolocatorChannel,
+            (MethodCall methodCall) async {
+      if (methodCall.method == 'isLocationServiceEnabled') {
+        return true;
+      }
+      if (methodCall.method == 'checkPermission') {
+        return 3; // LocationPermission.always
+      }
+      if (methodCall.method == 'getCurrentPosition') {
+        return {
+          'latitude': 12.9716,
+          'longitude': 77.5946,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+          'altitude': 0.0,
+          'accuracy': 5.0,
+          'heading': 0.0,
+          'speed': 0.0,
+          'speed_accuracy': 0.0,
+        };
+      }
+      return null;
+    });
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: DashboardScreen(),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(seconds: 2));
+
+    // Only 1 building is within 1 km (NearBuilding), FarBuilding is excluded.
+    expect(find.text('1 Complex Near You'), findsOneWidget);
+    expect(find.text('2 Complexes Near You'), findsNothing);
+  });
 }
+

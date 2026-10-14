@@ -453,10 +453,34 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
     );
   }
 
+  int _nearbyComplexCount(DashboardState dashboardState) {
+    if (dashboardState.entries.isNotEmpty) {
+      final gps = widget.userGps ?? _lastGeocodedGps;
+      if (gps == null) return 0;
+      var count = 0;
+      for (final name in dashboardState.groupedByBuilding.keys) {
+        final pin = dashboardState.buildingPinLocation(name) ??
+            (dashboardState.buildingLocations[name] != null
+                ? (
+                    dashboardState.buildingLocations[name]!.latitude,
+                    dashboardState.buildingLocations[name]!.longitude,
+                  )
+                : null);
+        if (pin != null) {
+          final distance = haversineMeters(gps, pin);
+          if (distance <= 1000) {
+            count++;
+          }
+        }
+      }
+      return count;
+    }
+    return _sampleComplexes.where((c) => c.distanceMeters <= 1000).length;
+  }
+
   Widget _buildDirectoryHeader(DashboardState dashboardState) {
-    final count = dashboardState.entries.isNotEmpty
-        ? dashboardState.groupedByBuilding.length
-        : _sampleComplexes.length;
+    final count = _nearbyComplexCount(dashboardState);
+    final countLabel = count == 1 ? 'Complex Near You' : 'Complexes Near You';
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -471,7 +495,7 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
           ),
         ),
         Text(
-          '$count Complexes Near You',
+          '$count $countLabel',
           style: GoogleFonts.inter(
             fontSize: 12,
             fontWeight: FontWeight.w500,
