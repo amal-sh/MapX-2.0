@@ -8,6 +8,7 @@ import 'package:mapx/models/outdoor_models.dart';
 import 'package:mapx/screens/admin_studio_screen.dart';
 import 'package:mapx/screens/connector_links_screen.dart';
 import 'package:mapx/screens/outdoor_map_screen.dart';
+import 'package:mapx/services/location_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -185,5 +186,63 @@ void main() {
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(find.text('Tap the building to link Building Alpha to'), findsNothing);
+  });
+
+  testWidgets(
+      'OutdoorMapScreen and ConnectorLinksScreen load cached user location and cache screen data',
+      (WidgetTester tester) async {
+    OutdoorMapScreen.resetStaticCache();
+    ConnectorLinksScreen.resetStaticCache();
+
+    // Set cached location in LocationService
+    final now = DateTime.now();
+    final mockLoc = BuildingLocation(
+      latitude: 12.9716,
+      longitude: 77.5946,
+      accuracy: 5.0,
+      timestamp: now,
+    );
+    LocationService.instance.setCachedLocation(mockLoc);
+
+    SharedPreferences.setMockInitialValues({
+      'last_known_gps_location': jsonEncode(mockLoc.toJson()),
+    });
+
+    // 1. Pump OutdoorMapScreen
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: OutdoorMapScreen(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify screen rendered without staying stuck in loading
+    expect(find.text('Outdoor Map'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+
+    // Verify user location dot is rendered
+    expect(find.byType(OutdoorMapScreen), findsOneWidget);
+
+    // 2. Pump ConnectorLinksScreen
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: ConnectorLinksScreen(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connector Links'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+
+    // 3. Tap My Location button
+    final myLocButton = find.byTooltip('My location');
+    expect(myLocButton, findsOneWidget);
+    await tester.tap(myLocButton);
+    await tester.pumpAndSettle();
+
+    // Clean up
+    OutdoorMapScreen.resetStaticCache();
+    ConnectorLinksScreen.resetStaticCache();
+    LocationService.instance.setCachedLocation(null);
   });
 }

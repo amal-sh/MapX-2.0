@@ -22,18 +22,38 @@ class OutdoorMapScreen extends StatefulWidget {
 
   const OutdoorMapScreen({super.key});
 
+  @visibleForTesting
+  static void resetStaticCache() => _OutdoorMapScreenState.resetStaticCache();
+
   @override
   State<OutdoorMapScreen> createState() => _OutdoorMapScreenState();
 }
 
 class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
+  // Static screen-level cache so returning to this screen renders instantly
+  static Map<String, MappedBuilding>? _cachedBuildings;
+  static List<BuildingConnection>? _cachedConnections;
+  static GeoPoint? _cachedLocation;
+  static LatLng? _cachedCenter;
+  static double? _cachedZoom;
+
+  @visibleForTesting
+  static void resetStaticCache() {
+    _cachedBuildings = null;
+    _cachedConnections = null;
+    _cachedLocation = null;
+    _cachedCenter = null;
+    _cachedZoom = null;
+  }
+
   final _map = MapController();
   final _repo = BuildingRepository.instance;
 
-  Map<String, MappedBuilding> _buildings = {};
-  List<BuildingConnection> _connections = [];
-  bool _loading = true;
+  Map<String, MappedBuilding> _buildings = _cachedBuildings ?? {};
+  List<BuildingConnection> _connections = _cachedConnections ?? [];
+  late bool _loading = _buildings.isEmpty;
   GeoPoint? _me;
+  bool _userHasPanned = false;
 
   /// Active basemap style. Defaults to the saved preference (dark when
   /// unset, matching the dashboard preview map); the layers control
@@ -83,18 +103,61 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
   @override
   void initState() {
     super.initState();
-    _load(sync: true);
+    // Restore cached location if known
+    final cached = _cachedLocation ??
+        (LocationService.instance.cachedLocation != null
+            ? (
+                LocationService.instance.cachedLocation!.latitude,
+                LocationService.instance.cachedLocation!.longitude
+              )
+            : null);
+    if (cached != null) {
+      _me = cached;
+    }
+
+    _load(sync: _cachedBuildings == null);
     UserPreferencesService.instance.loadBasemapTheme().then((basemap) {
       if (mounted) setState(() => _basemap = basemap);
     });
-    LocationService.instance.getCurrentLocation().then((loc) {
-      if (loc != null && mounted) setState(() => _me = (loc.latitude, loc.longitude));
-    });
+    _loadUserLocation();
+  }
+
+  Future<void> _loadUserLocation({bool moveToUser = true}) async {
+    // 1. Try restoring fast cached/persisted location
+    final cached = await LocationService.instance.getLastKnownOrCachedLocation();
+    if (cached != null && mounted) {
+      final p = (cached.latitude, cached.longitude);
+      _cachedLocation = p;
+      setState(() => _me = p);
+      if (moveToUser && !_userHasPanned) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _map.move(_ll(p), 17.5);
+        });
+      }
+    }
+
+    // 2. Refresh with high-accuracy live GPS fix
+    try {
+      final loc = await LocationService.instance.getCurrentLocation();
+      if (loc != null && mounted) {
+        final p = (loc.latitude, loc.longitude);
+        _cachedLocation = p;
+        final wasNull = _me == null;
+        setState(() => _me = p);
+        if ((wasNull || moveToUser) && !_userHasPanned) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _map.move(_ll(p), 17.5);
+          });
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _load({bool sync = false}) async {
     final buildings = await _repo.loadBuildings();
     final connections = await _repo.loadConnections(sync: sync);
+    _cachedBuildings = buildings;
+    _cachedConnections = connections;
     if (!mounted) return;
     setState(() {
       _buildings = buildings;
@@ -279,9 +342,9 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
     );
   }
 
-  // ---- map ---------------------------------------------------------------
-
   LatLng get _initialCenter {
+    if (_cachedCenter != null) return _cachedCenter!;
+    if (_me != null) return _ll(_me!);
     final pins = _buildings.values.map((b) => b.pinLocation).whereType<GeoPoint>().toList();
     if (pins.isNotEmpty) {
       return LatLng(
@@ -289,7 +352,7 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
         pins.map((p) => p.$2).reduce((a, b) => a + b) / pins.length,
       );
     }
-    return _me == null ? const LatLng(20, 78) : _ll(_me!);
+    return const LatLng(20, 78);
   }
 
   @override
@@ -317,12 +380,19 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                           mapController: _map,
                           options: MapOptions(
                             initialCenter: _initialCenter,
-                            initialZoom:
-                                placed.isEmpty && _me == null ? 4 : 17,
+                            initialZoom: _cachedZoom ??
+                                (_me != null ? 17 : (placed.isEmpty ? 4 : 17)),
                             maxZoom: 20,
                             backgroundColor: _darkMode
                                 ? const Color(0xFF18181B)
                                 : const Color(0xFFF4F4F5),
+                            onPositionChanged: (pos, hasGesture) {
+                              if (hasGesture) {
+                                _userHasPanned = true;
+                                _cachedCenter = pos.center;
+                                _cachedZoom = pos.zoom;
+                              }
+                            },
                           ),
                           children: [
                             basemapTileLayer(_basemapTheme),
@@ -466,9 +536,15 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                           _GlassCircleButton(
                             icon: Icons.my_location,
                             tooltip: 'My location',
-                            onPressed: _me == null
-                                ? null
-                                : () => _map.move(_ll(_me!), 18),
+                            onPressed: () {
+                              if (_me != null) {
+                                _userHasPanned = false;
+                                _cachedCenter = _ll(_me!);
+                                _map.move(_ll(_me!), 18);
+                              } else {
+                                _loadUserLocation(moveToUser: true);
+                              }
+                            },
                           ),
                         ],
                       ),

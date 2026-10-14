@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class BuildingLocation {
   final double latitude;
@@ -37,6 +39,8 @@ class LocationService {
   static final LocationService instance = LocationService._();
   LocationService._();
 
+  static const _cachedLocationKey = 'last_known_gps_location';
+
   BuildingLocation? _cachedLocation;
 
   /// Returns the most recently fetched GPS fix, if available.
@@ -46,6 +50,46 @@ class LocationService {
   /// Sets or clears the cached location (useful for tests and manual resets).
   void setCachedLocation(BuildingLocation? loc) {
     _cachedLocation = loc;
+    if (loc != null) {
+      _persistLocation(loc);
+    }
+  }
+
+  Future<void> _persistLocation(BuildingLocation loc) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_cachedLocationKey, jsonEncode(loc.toJson()));
+    } catch (_) {}
+  }
+
+  /// Returns the cached location in memory, or restores from SharedPreferences /
+  /// last known OS position without waiting for a new GPS fix.
+  Future<BuildingLocation?> getLastKnownOrCachedLocation() async {
+    if (_cachedLocation != null) return _cachedLocation;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_cachedLocationKey);
+      if (saved != null) {
+        final loc = BuildingLocation.fromJson(jsonDecode(saved) as Map<String, dynamic>);
+        _cachedLocation = loc;
+        return loc;
+      }
+    } catch (_) {}
+    try {
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null) {
+        final loc = BuildingLocation(
+          latitude: lastKnown.latitude,
+          longitude: lastKnown.longitude,
+          accuracy: lastKnown.accuracy,
+          timestamp: lastKnown.timestamp,
+        );
+        _cachedLocation = loc;
+        _persistLocation(loc);
+        return loc;
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// Prompts the user for location permission if not already granted.
@@ -107,6 +151,7 @@ class LocationService {
         timestamp: position.timestamp,
       );
       _cachedLocation = loc;
+      _persistLocation(loc);
       return loc;
     } catch (e) {
       debugPrint('Error getting GPS location: $e');
@@ -120,6 +165,7 @@ class LocationService {
             timestamp: lastKnown.timestamp,
           );
           _cachedLocation = loc;
+          _persistLocation(loc);
           return loc;
         }
       } catch (_) {}
