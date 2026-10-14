@@ -201,6 +201,10 @@ class _ConnectorLinksScreenState extends State<ConnectorLinksScreen> {
   }
 
   Future<void> _connect(MappedBuilding a, MappedBuilding b) async {
+    if (a.entrancesWithGps.isEmpty) {
+      _explainNoEntrance(a);
+      return;
+    }
     if (b.entrancesWithGps.isEmpty) {
       _explainNoEntrance(b);
       return;
@@ -338,14 +342,20 @@ class _ConnectorLinksScreenState extends State<ConnectorLinksScreen> {
       haversineMeters((x.latitude!, x.longitude!), (y.latitude!, y.longitude!));
 
   void _explainNoEntrance(MappedBuilding b) {
+    final hasEntrance = b.entrances.isNotEmpty;
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('${b.name} has no entrance on the map'),
-        content: const Text(
-          'Buildings are linked through their entrances. Open the building in MapX Studio, '
-          'open the floor editor, and add a place of type "Entrance" at the door. '
-          'Its GPS position is recorded so it can be placed on the street map.',
+        title: Text(hasEntrance
+            ? '${b.name} entrance has no GPS position'
+            : '${b.name} has no entrance on the map'),
+        content: Text(
+          hasEntrance
+              ? 'Buildings are linked through their entrances with GPS coordinates. '
+                  'Open ${b.name} in the floor editor and adjust the entrance place to set its GPS position on the map.'
+              : 'Buildings are linked through their entrances. Open the building in MapX Studio, '
+                  'open the floor editor, and add a place of type "Entrance" at the door. '
+                  'Its GPS position is recorded so it can be placed on the street map.',
         ),
         actions: [
           TextButton(
@@ -378,6 +388,7 @@ class _ConnectorLinksScreenState extends State<ConnectorLinksScreen> {
       ),
     );
     if (ok != true) return;
+    setState(() => _connectFrom = null);
     await _repo.deleteConnection(c);
     await _load();
   }

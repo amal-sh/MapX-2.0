@@ -225,6 +225,22 @@ class DashboardState {
     return result;
   }
 
+  /// Effective GPS pin location for a building: mean of entrances with GPS if available,
+  /// else recorded building location.
+  (double, double)? buildingPinLocation(String buildingName) {
+    final entrances = (buildingEntrances[buildingName] ?? const [])
+        .where((e) => e.hasGps)
+        .toList();
+    if (entrances.isNotEmpty) {
+      final lat = entrances.map((e) => e.latitude!).reduce((a, b) => a + b) / entrances.length;
+      final lng = entrances.map((e) => e.longitude!).reduce((a, b) => a + b) / entrances.length;
+      return (lat, lng);
+    }
+    final loc = buildingLocations[buildingName];
+    if (loc != null) return (loc.latitude, loc.longitude);
+    return null;
+  }
+
   /// Groups map entries by building name, sorted ascending by floor.
   Map<String, List<BuildingMapEntry>> get groupedByBuilding {
     final byBuilding = <String, List<BuildingMapEntry>>{};

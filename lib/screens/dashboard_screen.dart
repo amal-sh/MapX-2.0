@@ -211,11 +211,15 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   /// cached building fixes. Null while nothing is known (keeps the fallback).
   LatLng? _resolvePreviewTarget(DashboardState state) {
     if (_userGps != null) return LatLng(_userGps!.$1, _userGps!.$2);
-    final pins = state.buildingLocations.values.toList();
+    final pins = [
+      for (final name in state.allBuildingNames)
+        if (state.buildingPinLocation(name) != null)
+          state.buildingPinLocation(name)!
+    ];
     if (pins.isEmpty) return null;
     return LatLng(
-      pins.map((p) => p.latitude).reduce((a, b) => a + b) / pins.length,
-      pins.map((p) => p.longitude).reduce((a, b) => a + b) / pins.length,
+      pins.map((p) => p.$1).reduce((a, b) => a + b) / pins.length,
+      pins.map((p) => p.$2).reduce((a, b) => a + b) / pins.length,
     );
   }
 
@@ -438,28 +442,30 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
                                     size: 15, color: Colors.black),
                               ),
                             ),
-                          for (final entry in dashboardState
-                              .buildingLocations.entries)
-                            Marker(
-                              point: LatLng(entry.value.latitude,
-                                  entry.value.longitude),
-                              width: 150,
-                              height: 70,
-                              alignment: Alignment.topCenter,
-                              child: GestureDetector(
-                                onTap: () {
-                                  final floors = dashboardState
-                                          .groupedByBuilding[entry.key] ??
-                                      const <BuildingMapEntry>[];
-                                  if (floors.isNotEmpty) {
-                                    _openPreviewBuilding(
-                                        entry.key, floors);
-                                  }
-                                },
-                                child: _PreviewBuildingPin(
-                                    name: entry.key),
+                          for (final name in dashboardState.allBuildingNames)
+                            if (dashboardState.buildingPinLocation(name) != null)
+                              Marker(
+                                point: LatLng(
+                                  dashboardState.buildingPinLocation(name)!.$1,
+                                  dashboardState.buildingPinLocation(name)!.$2,
+                                ),
+                                width: 150,
+                                height: 70,
+                                alignment: Alignment.topCenter,
+                                child: GestureDetector(
+                                  onTap: () {
+                                    final floors = dashboardState
+                                            .groupedByBuilding[name] ??
+                                        const <BuildingMapEntry>[];
+                                    if (floors.isNotEmpty) {
+                                      _openPreviewBuilding(
+                                          name, floors);
+                                    }
+                                  },
+                                  child: _PreviewBuildingPin(
+                                      name: name),
+                                ),
                               ),
-                            ),
                           if (_userGps != null)
                             Marker(
                               point:

@@ -216,13 +216,19 @@ class Waypoint {
     if (longitude != null) 'longitude': longitude,
   };
 
+  static double? _asDouble(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString());
+  }
+
   factory Waypoint.fromJson(Map<String, dynamic> json) => Waypoint(
-    json['globalStepIndex'] as int,
-    json['label'] as String,
-    floor: json['floor'] as int? ?? 0,
+    (json['globalStepIndex'] ?? json['stepIndex'] as num?)?.toInt() ?? 0,
+    (json['label'] as String?) ?? '',
+    floor: (json['floor'] as num?)?.toInt() ?? 0,
     category: json['category'] as String? ?? 'room',
-    latitude: (json['latitude'] as num?)?.toDouble(),
-    longitude: (json['longitude'] as num?)?.toDouble(),
+    latitude: _asDouble(json['latitude'] ?? json['lat']),
+    longitude: _asDouble(json['longitude'] ?? json['lng']),
   );
 
   /// The same place at another node index (after the path network changed).
@@ -235,7 +241,7 @@ class Waypoint {
   /// A door to the outside, where routes to other buildings start and end.
   static const String entranceCategory = 'entrance';
 
-  bool get isEntrance => category == entranceCategory;
+  bool get isEntrance => category.trim().toLowerCase() == entranceCategory;
   bool get hasGps => latitude != null && longitude != null;
 
   /// Stairs or lift: a place that leads to other floors.

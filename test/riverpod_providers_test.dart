@@ -8,6 +8,7 @@ import 'package:mapx/providers/dashboard_providers.dart';
 import 'package:mapx/providers/navigation_providers.dart';
 import 'package:mapx/providers/search_providers.dart';
 import 'package:mapx/providers/service_providers.dart';
+import 'package:mapx/services/location_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -186,6 +187,54 @@ void main() {
       expect(state.trackingConfidence, TrackingConfidence.high);
       expect(state.liveProgress, 15.0);
       expect(state.offPathAngleDelta, 2.5);
+    });
+  });
+
+  group('Building Pin Location and Entrance Fallback', () {
+    test('DashboardState.buildingPinLocation prioritizes entrance GPS over recorded location', () {
+      final state = DashboardState(
+        buildingLocations: {
+          'Alan': BuildingLocation(
+            latitude: 12.0,
+            longitude: 77.0,
+            accuracy: 5.0,
+            timestamp: DateTime.now(),
+          ),
+        },
+        buildingEntrances: {
+          'Alan': [
+            Waypoint(0, 'Main Door', latitude: 12.001, longitude: 77.002, category: 'entrance'),
+          ],
+        },
+      );
+
+      final pin = state.buildingPinLocation('Alan');
+      expect(pin, isNotNull);
+      expect(pin!.$1, 12.001);
+      expect(pin.$2, 77.002);
+    });
+
+    test('DashboardState.buildingPinLocation falls back to recorded location when entrance has no GPS', () {
+      final state = DashboardState(
+        buildingLocations: {
+          'Alan': BuildingLocation(
+            latitude: 12.0,
+            longitude: 77.0,
+            accuracy: 5.0,
+            timestamp: DateTime.now(),
+          ),
+        },
+        buildingEntrances: {
+          'Alan': [
+            Waypoint(0, 'Main Door', category: 'entrance'),
+          ],
+        },
+      );
+
+      final pin = state.buildingPinLocation('Alan');
+      expect(pin, isNotNull);
+      expect(pin!.$1, 12.0);
+      expect(pin.$2, 77.0);
     });
   });
 }

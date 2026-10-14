@@ -515,17 +515,15 @@ class _DashboardBottomSheetState extends State<DashboardBottomSheet> {
       DashboardState dashboardState) {
     final buildings = dashboardState.groupedByBuilding.entries.toList();
     buildings.sort((a, b) {
-      final la = dashboardState.buildingLocations[a.key];
-      final lb = dashboardState.buildingLocations[b.key];
-      if (widget.userGps != null && la != null && lb != null) {
-        final da =
-            haversineMeters(widget.userGps!, (la.latitude, la.longitude));
-        final db =
-            haversineMeters(widget.userGps!, (lb.latitude, lb.longitude));
+      final pa = dashboardState.buildingPinLocation(a.key);
+      final pb = dashboardState.buildingPinLocation(b.key);
+      if (widget.userGps != null && pa != null && pb != null) {
+        final da = haversineMeters(widget.userGps!, pa);
+        final db = haversineMeters(widget.userGps!, pb);
         return da.compareTo(db);
       }
-      if (widget.userGps != null && (la != null || lb != null)) {
-        return la != null ? -1 : 1;
+      if (widget.userGps != null && (pa != null || pb != null)) {
+        return pa != null ? -1 : 1;
       }
       return a.key.compareTo(b.key);
     });

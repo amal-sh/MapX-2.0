@@ -27,7 +27,24 @@ class MappedBuilding {
     this.recordedLocation,
   });
 
-  List<Waypoint> get entrancesWithGps => entrances.where((e) => e.hasGps).toList();
+  List<Waypoint> get entrancesWithGps {
+    final direct = entrances.where((e) => e.hasGps).toList();
+    if (direct.isNotEmpty) return direct;
+    if (recordedLocation != null && entrances.isNotEmpty) {
+      return entrances.map((e) {
+        if (e.hasGps) return e;
+        return Waypoint(
+          e.globalStepIndex,
+          e.label,
+          floor: e.floor,
+          category: e.category,
+          latitude: recordedLocation!.$1,
+          longitude: recordedLocation!.$2,
+        );
+      }).where((e) => e.hasGps).toList();
+    }
+    return const [];
+  }
 
   /// Where to put the building's pin: the middle of its entrances, or the
   /// location recorded when it was mapped.
@@ -68,12 +85,17 @@ class BuildingRepository {
       } catch (_) {
         continue;
       }
-      final name = data['name'] as String? ?? key.substring(4);
+      final rawName = (data['name'] as String?)?.trim();
+      final name = (rawName != null && rawName.isNotEmpty)
+          ? rawName
+          : key.substring(4).split('#').first.trim();
       final floor = data['floor'] as int? ?? 0;
       floors.putIfAbsent(name, () => {})[floor] = key;
       for (final w in (data['waypoints'] as List? ?? const [])) {
-        final wp = Waypoint.fromJson(Map<String, dynamic>.from(w as Map));
-        if (wp.isEntrance) entrances.putIfAbsent(name, () => []).add(wp);
+        try {
+          final wp = Waypoint.fromJson(Map<String, dynamic>.from(w as Map));
+          if (wp.isEntrance) entrances.putIfAbsent(name, () => []).add(wp);
+        } catch (_) {}
       }
       if (data['latitude'] != null && data['longitude'] != null) {
         locations.putIfAbsent(name, () => ((data['latitude'] as num).toDouble(), (data['longitude'] as num).toDouble()));
