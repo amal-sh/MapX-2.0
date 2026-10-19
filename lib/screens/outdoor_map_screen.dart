@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -48,6 +50,7 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
 
   final _map = MapController();
   final _repo = BuildingRepository.instance;
+  StreamSubscription<BuildingLocation>? _gpsSub;
 
   Map<String, MappedBuilding> _buildings = _cachedBuildings ?? {};
   List<BuildingConnection> _connections = _cachedConnections ?? [];
@@ -55,48 +58,48 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
   GeoPoint? _me;
   bool _userHasPanned = false;
 
-  /// Active basemap style. Defaults to the saved preference (dark when
+  /// Active basemap style. Defaults to the saved preference (standard OSM when
   /// unset, matching the dashboard preview map); the layers control
   /// switches between dark, light and standard OSM for this session.
-  String _basemap = UserPreferencesService.basemapDark;
+  String _basemap = UserPreferencesService.basemapStandard;
 
-  /// The CARTO dark style is the only dark basemap; light and standard
+  /// The dark style is the only dark basemap; light and standard
   /// OSM both use the light chrome (dot, casing, background).
   bool get _darkMode => _basemap == UserPreferencesService.basemapDark;
 
   BasemapTheme get _basemapTheme {
     switch (_basemap) {
-      case UserPreferencesService.basemapStandard:
-        return BasemapTheme.standard;
+      case UserPreferencesService.basemapDark:
+        return BasemapTheme.dark;
       case UserPreferencesService.basemapLight:
         return BasemapTheme.light;
-      case UserPreferencesService.basemapDark:
+      case UserPreferencesService.basemapStandard:
       default:
-        return BasemapTheme.dark;
+        return BasemapTheme.standard;
     }
   }
 
   String get _basemapLabel {
     switch (_basemap) {
-      case UserPreferencesService.basemapStandard:
-        return 'Standard OSM';
+      case UserPreferencesService.basemapDark:
+        return 'Dark';
       case UserPreferencesService.basemapLight:
         return 'Light';
-      case UserPreferencesService.basemapDark:
+      case UserPreferencesService.basemapStandard:
       default:
-        return 'Dark';
+        return 'Standard OSM';
     }
   }
 
   IconData get _basemapIcon {
     switch (_basemap) {
-      case UserPreferencesService.basemapStandard:
-        return CupertinoIcons.globe;
+      case UserPreferencesService.basemapDark:
+        return CupertinoIcons.moon_fill;
       case UserPreferencesService.basemapLight:
         return CupertinoIcons.sun_max_fill;
-      case UserPreferencesService.basemapDark:
+      case UserPreferencesService.basemapStandard:
       default:
-        return CupertinoIcons.moon_fill;
+        return CupertinoIcons.globe;
     }
   }
 
@@ -120,6 +123,29 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
       if (mounted) setState(() => _basemap = basemap);
     });
     _loadUserLocation();
+    _startLocationTracking();
+  }
+
+  @override
+  void dispose() {
+    _gpsSub?.cancel();
+    super.dispose();
+  }
+
+  void _startLocationTracking() {
+    _gpsSub?.cancel();
+    _gpsSub = LocationService.instance
+        .getPositionStream(distanceFilter: 2)
+        .listen((loc) {
+      if (!mounted) return;
+      final p = (loc.latitude, loc.longitude);
+      _cachedLocation = p;
+      final wasNull = _me == null;
+      setState(() => _me = p);
+      if ((wasNull || !_userHasPanned) && mounted) {
+        _map.move(_ll(p), _map.camera.zoom);
+      }
+    });
   }
 
   Future<void> _loadUserLocation({bool moveToUser = true}) async {
@@ -461,6 +487,7 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                                       point: _ll(_me!),
                                       width: 72,
                                       height: 72,
+                                      alignment: Alignment.center,
                                       child: userLocationDot(
                                           dark: _darkMode)),
                                 for (final b in placed)
@@ -537,13 +564,13 @@ class _OutdoorMapScreenState extends State<OutdoorMapScreen> {
                             icon: Icons.my_location,
                             tooltip: 'My location',
                             onPressed: () {
+                              _userHasPanned = false;
                               if (_me != null) {
-                                _userHasPanned = false;
                                 _cachedCenter = _ll(_me!);
                                 _map.move(_ll(_me!), 18);
-                              } else {
-                                _loadUserLocation(moveToUser: true);
                               }
+                              _loadUserLocation(moveToUser: true);
+                              _startLocationTracking();
                             },
                           ),
                         ],

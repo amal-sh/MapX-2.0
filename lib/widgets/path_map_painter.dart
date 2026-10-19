@@ -12,7 +12,11 @@ class MapViewport {
 
   const MapViewport._(this.size, this.scale, this.centreEast, this.centreNorth);
 
-  factory MapViewport.fit(List<PathNode> nodes, List<WallSegment> walls, Size size) {
+  factory MapViewport.fit(
+    List<PathNode> nodes,
+    List<WallSegment> walls,
+    Size size,
+  ) {
     var minEast = nodes.first.east, maxEast = nodes.first.east;
     var minNorth = nodes.first.north, maxNorth = nodes.first.north;
     for (final n in nodes) {
@@ -32,20 +36,27 @@ class MapViewport {
     const padding = 20.0;
     final spanEast = max(maxEast - minEast, minSpan);
     final spanNorth = max(maxNorth - minNorth, minSpan);
-    final scale = min((size.width - 2 * padding) / spanEast,
-        (size.height - 2 * padding) / spanNorth);
-    return MapViewport._(size, scale, (minEast + maxEast) / 2, (minNorth + maxNorth) / 2);
+    final scale = min(
+      (size.width - 2 * padding) / spanEast,
+      (size.height - 2 * padding) / spanNorth,
+    );
+    return MapViewport._(
+      size,
+      scale,
+      (minEast + maxEast) / 2,
+      (minNorth + maxNorth) / 2,
+    );
   }
 
   Offset toScreen(double east, double north) => Offset(
-        size.width / 2 + (east - centreEast) * scale,
-        size.height / 2 - (north - centreNorth) * scale,
-      );
+    size.width / 2 + (east - centreEast) * scale,
+    size.height / 2 - (north - centreNorth) * scale,
+  );
 
   (double, double) toMap(Offset p) => (
-        centreEast + (p.dx - size.width / 2) / scale,
-        centreNorth - (p.dy - size.height / 2) / scale,
-      );
+    centreEast + (p.dx - size.width / 2) / scale,
+    centreNorth - (p.dy - size.height / 2) / scale,
+  );
 }
 
 class PathMapPainter extends CustomPainter {
@@ -62,7 +73,14 @@ class PathMapPainter extends CustomPainter {
   /// node.
   final int? walkEnd;
 
-  PathMapPainter(this.nodes, this.waypoints, {this.routeNodes, this.walls = const [], this.edges, this.walkEnd});
+  PathMapPainter(
+    this.nodes,
+    this.waypoints, {
+    this.routeNodes,
+    this.walls = const [],
+    this.edges,
+    this.walkEnd,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -83,7 +101,11 @@ class PathMapPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeWidth = 4.5;
     for (final w in walls) {
-      canvas.drawLine(toScreen(w.startEast, w.startNorth), toScreen(w.endEast, w.endNorth), wallPaint);
+      canvas.drawLine(
+        toScreen(w.startEast, w.startNorth),
+        toScreen(w.endEast, w.endNorth),
+        wallPaint,
+      );
     }
 
     final path = Path();
@@ -113,8 +135,10 @@ class PathMapPainter extends CustomPainter {
 
     if (routeNodes != null && routeNodes!.isNotEmpty) {
       final routePath = Path()
-        ..moveTo(toScreen(routeNodes!.first.east, routeNodes!.first.north).dx,
-            toScreen(routeNodes!.first.east, routeNodes!.first.north).dy);
+        ..moveTo(
+          toScreen(routeNodes!.first.east, routeNodes!.first.north).dx,
+          toScreen(routeNodes!.first.east, routeNodes!.first.north).dy,
+        );
       for (final n in routeNodes!.skip(1)) {
         final p = toScreen(n.east, n.north);
         routePath.lineTo(p.dx, p.dy);
@@ -142,17 +166,25 @@ class PathMapPainter extends CustomPainter {
         if (wp.isConnector) {
           // Stairs/lift: a square, so floor links stand out from places.
           canvas.drawRRect(
-            RRect.fromRectAndRadius(Rect.fromCenter(center: pos, width: 16, height: 16), const Radius.circular(3)),
+            RRect.fromRectAndRadius(
+              Rect.fromCenter(center: pos, width: 16, height: 16),
+              const Radius.circular(3),
+            ),
             Paint()..color = Colors.black,
           );
-          canvas.drawRect(Rect.fromCenter(center: pos, width: 7, height: 7), Paint()..color = Colors.white);
+          canvas.drawRect(
+            Rect.fromCenter(center: pos, width: 7, height: 7),
+            Paint()..color = Colors.white,
+          );
           _paintBadge(canvas, wp.displayName, pos + const Offset(10, -10));
         } else {
-          final isStartWp = routeNodes != null &&
+          final isStartWp =
+              routeNodes != null &&
               routeNodes!.isNotEmpty &&
               (node.east - routeNodes!.first.east).abs() < 0.05 &&
               (node.north - routeNodes!.first.north).abs() < 0.05;
-          final isEndWp = routeNodes != null &&
+          final isEndWp =
+              routeNodes != null &&
               routeNodes!.isNotEmpty &&
               (node.east - routeNodes!.last.east).abs() < 0.05 &&
               (node.north - routeNodes!.last.north).abs() < 0.05;
@@ -161,12 +193,22 @@ class PathMapPainter extends CustomPainter {
             canvas.drawCircle(pos, 8, Paint()..color = Colors.black);
             canvas.drawCircle(pos, 5, Paint()..color = Colors.white);
             canvas.drawCircle(pos, 2.5, Paint()..color = Colors.black);
-            _paintBadge(canvas, wp.label, pos + const Offset(10, 8), hasDot: true);
+            _paintBadge(
+              canvas,
+              wp.label,
+              pos + const Offset(10, 8),
+              hasDot: true,
+            );
           } else if (isEndWp) {
             canvas.drawCircle(pos, 9, Paint()..color = Colors.black);
             canvas.drawCircle(pos, 5, Paint()..color = Colors.white);
             canvas.drawCircle(pos, 2.5, Paint()..color = Colors.black);
-            _paintBadge(canvas, '🚩 End', pos + const Offset(12, -12), isBlack: true);
+            _paintBadge(
+              canvas,
+              '🚩 End',
+              pos + const Offset(12, -12),
+              isBlack: true,
+            );
           } else {
             canvas.drawCircle(pos, 6, Paint()..color = Colors.black);
             canvas.drawCircle(pos, 4, Paint()..color = Colors.white);
@@ -189,14 +231,20 @@ class PathMapPainter extends CustomPainter {
       canvas.drawCircle(rEndPos, 9, Paint()..color = Colors.black);
       canvas.drawCircle(rEndPos, 5, Paint()..color = Colors.white);
       canvas.drawCircle(rEndPos, 2.5, Paint()..color = Colors.black);
-      _paintBadge(canvas, '🚩 End', rEndPos + const Offset(12, -12), isBlack: true);
+      _paintBadge(
+        canvas,
+        '🚩 End',
+        rEndPos + const Offset(12, -12),
+        isBlack: true,
+      );
     } else {
       final startPos = toScreen(nodes.first.east, nodes.first.north);
       canvas.drawCircle(startPos, 7, Paint()..color = Colors.black);
       canvas.drawCircle(startPos, 4, Paint()..color = Colors.white);
       canvas.drawCircle(startPos, 2, Paint()..color = Colors.black);
 
-      final end = nodes[(walkEnd ?? nodes.length - 1).clamp(0, nodes.length - 1)];
+      final end =
+          nodes[(walkEnd ?? nodes.length - 1).clamp(0, nodes.length - 1)];
       if (nodes.length > 1) {
         final endPos = toScreen(end.east, end.north);
         canvas.drawCircle(endPos, 7, Paint()..color = Colors.black);
@@ -207,8 +255,14 @@ class PathMapPainter extends CustomPainter {
     _paintNorthArrow(canvas, size);
   }
 
-  void _paintGrid(Canvas canvas, Size size, double scale, double centreEast,
-      double centreNorth, Offset Function(double, double) toScreen) {
+  void _paintGrid(
+    Canvas canvas,
+    Size size,
+    double scale,
+    double centreEast,
+    double centreNorth,
+    Offset Function(double, double) toScreen,
+  ) {
     final halfEast = size.width / 2 / scale;
     final halfNorth = size.height / 2 / scale;
     final step = (max(halfEast, halfNorth) * 2) > 20 ? 5.0 : 1.0;
@@ -216,15 +270,19 @@ class PathMapPainter extends CustomPainter {
       ..color = const Color(0xFFF0F0F3)
       ..strokeWidth = 1;
 
-    for (var e = ((centreEast - halfEast) / step).ceil() * step;
-        e <= centreEast + halfEast;
-        e += step) {
+    for (
+      var e = ((centreEast - halfEast) / step).ceil() * step;
+      e <= centreEast + halfEast;
+      e += step
+    ) {
       final x = toScreen(e, centreNorth).dx;
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
     }
-    for (var n = ((centreNorth - halfNorth) / step).ceil() * step;
-        n <= centreNorth + halfNorth;
-        n += step) {
+    for (
+      var n = ((centreNorth - halfNorth) / step).ceil() * step;
+      n <= centreNorth + halfNorth;
+      n += step
+    ) {
       final y = toScreen(centreEast, n).dy;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
     }

@@ -45,6 +45,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
   static const _methodChannel = MethodChannel('mapx/arcore');
 
   GeoPoint? _userGps;
+  StreamSubscription<BuildingLocation>? _locationSub;
 
   /// True while the initial GPS fix is being fetched. Drives the circular
   /// loader floating over the map.
@@ -91,6 +92,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
 
   @override
   void dispose() {
+    _locationSub?.cancel();
     _previewMap.dispose();
     _sheetController.dispose();
     super.dispose();
@@ -98,21 +100,46 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
 
   Future<void> _requestInitialLocationPermission() async {
     try {
-      if (_userGps != null) {
-        ref.read(dashboardProvider.notifier).loadMaps();
-        return;
+      // If we don't have an in-memory cached location yet, try restoring from disk/last-known
+      if (_userGps == null) {
+        final cached = await LocationService.instance.getLastKnownOrCachedLocation();
+        if (cached != null && mounted) {
+          setState(() {
+            _userGps = (cached.latitude, cached.longitude);
+            _locating = false;
+          });
+          ref.read(dashboardProvider.notifier).loadMaps();
+        }
       }
+
       final granted = await LocationService.instance.requestPermission();
       if (granted && mounted) {
         final loc = await LocationService.instance.getCurrentLocation();
         if (loc != null && mounted) {
-          setState(() => _userGps = (loc.latitude, loc.longitude));
+          final p = (loc.latitude, loc.longitude);
+          setState(() => _userGps = p);
           ref.read(dashboardProvider.notifier).loadMaps();
         }
+        _startLocationTracking();
       }
     } finally {
       if (mounted) setState(() => _locating = false);
     }
+  }
+
+  void _startLocationTracking() {
+    _locationSub?.cancel();
+    _locationSub = LocationService.instance
+        .getPositionStream(distanceFilter: 3)
+        .listen((loc) {
+      if (!mounted) return;
+      final newGps = (loc.latitude, loc.longitude);
+      if (_userGps == null ||
+          _userGps!.$1 != newGps.$1 ||
+          _userGps!.$2 != newGps.$2) {
+        setState(() => _userGps = newGps);
+      }
+    });
   }
 
   Future<void> _checkArCoreSupport() async {
@@ -333,11 +360,11 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
     final dashboardState = ref.watch(dashboardProvider);
     final basemapPref = ref.watch(basemapPreferenceProvider);
     final isDark = basemapPref == UserPreferencesService.basemapDark;
-    final basemapTheme = basemapPref == UserPreferencesService.basemapLight
-        ? BasemapTheme.light
-        : (basemapPref == UserPreferencesService.basemapStandard
-            ? BasemapTheme.standard
-            : BasemapTheme.dark);
+    final basemapTheme = basemapPref == UserPreferencesService.basemapDark
+        ? BasemapTheme.dark
+        : (basemapPref == UserPreferencesService.basemapLight
+            ? BasemapTheme.light
+            : BasemapTheme.standard);
     _ensurePreviewCentered(dashboardState);
 
     return Scaffold(
@@ -472,6 +499,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreenContent> {
                                   LatLng(_userGps!.$1, _userGps!.$2),
                               width: 72,
                               height: 72,
+                              alignment: Alignment.center,
                               child: userLocationDot(dark: isDark),
                             ),
                         ],

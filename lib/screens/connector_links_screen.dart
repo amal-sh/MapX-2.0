@@ -59,43 +59,43 @@ class _ConnectorLinksScreenState extends State<ConnectorLinksScreen> {
   /// Set while linking: the building chosen first.
   String? _connectFrom;
 
-  String _basemap = UserPreferencesService.basemapDark;
+  String _basemap = UserPreferencesService.basemapStandard;
 
   bool get _darkMode => _basemap == UserPreferencesService.basemapDark;
 
   BasemapTheme get _basemapTheme {
     switch (_basemap) {
-      case UserPreferencesService.basemapStandard:
-        return BasemapTheme.standard;
+      case UserPreferencesService.basemapDark:
+        return BasemapTheme.dark;
       case UserPreferencesService.basemapLight:
         return BasemapTheme.light;
-      case UserPreferencesService.basemapDark:
+      case UserPreferencesService.basemapStandard:
       default:
-        return BasemapTheme.dark;
+        return BasemapTheme.standard;
     }
   }
 
   String get _basemapLabel {
     switch (_basemap) {
-      case UserPreferencesService.basemapStandard:
-        return 'Standard OSM';
+      case UserPreferencesService.basemapDark:
+        return 'Dark';
       case UserPreferencesService.basemapLight:
         return 'Light';
-      case UserPreferencesService.basemapDark:
+      case UserPreferencesService.basemapStandard:
       default:
-        return 'Dark';
+        return 'Standard OSM';
     }
   }
 
   IconData get _basemapIcon {
     switch (_basemap) {
-      case UserPreferencesService.basemapStandard:
-        return CupertinoIcons.globe;
+      case UserPreferencesService.basemapDark:
+        return CupertinoIcons.moon_fill;
       case UserPreferencesService.basemapLight:
         return CupertinoIcons.sun_max_fill;
-      case UserPreferencesService.basemapDark:
+      case UserPreferencesService.basemapStandard:
       default:
-        return CupertinoIcons.moon_fill;
+        return CupertinoIcons.globe;
     }
   }
 
@@ -686,6 +686,7 @@ class _ConnectorLinksScreenState extends State<ConnectorLinksScreen> {
                                 point: _ll(_me!),
                                 width: 72,
                                 height: 72,
+                                alignment: Alignment.center,
                                 child: userLocationDot(dark: _darkMode),
                               ),
                             for (final b in placed)

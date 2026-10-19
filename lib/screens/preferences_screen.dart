@@ -191,13 +191,22 @@ class _PreferencesScreenState extends ConsumerState<PreferencesScreen> {
 
                   for (final option in const [
                     (
+                      value: UserPreferencesService.basemapStandard,
+                      icon: CupertinoIcons.globe,
+                      title: 'Standard OpenStreetMap',
+                      subtitle:
+                          'Classic full-color topological map rendering pathways, greenery, and buildings.',
+                      previewColor: Color(0xFFE4E4E7),
+                      badgeText: 'Default',
+                    ),
+                    (
                       value: UserPreferencesService.basemapDark,
                       icon: CupertinoIcons.moon_fill,
                       title: 'Dark Blue',
                       subtitle:
-                          'Deep dark blue & navy night tiles with reduced glare. Recommended for seamless outdoor & indoor navigation.',
+                          'Deep dark blue & navy night tiles with reduced glare. Suitable for night outdoor & indoor navigation.',
                       previewColor: Color(0xFF0F172A),
-                      badgeText: 'Recommended',
+                      badgeText: null,
                     ),
                     (
                       value: UserPreferencesService.basemapLight,
@@ -206,15 +215,6 @@ class _PreferencesScreenState extends ConsumerState<PreferencesScreen> {
                       subtitle:
                           'Clean, high-key grayscale styling optimized for bright sunlight conditions.',
                       previewColor: Color(0xFFF4F4F5),
-                      badgeText: null,
-                    ),
-                    (
-                      value: UserPreferencesService.basemapStandard,
-                      icon: CupertinoIcons.globe,
-                      title: 'Standard OpenStreetMap',
-                      subtitle:
-                          'Classic full-color topological map rendering pathways, greenery, and buildings.',
-                      previewColor: Color(0xFFE4E4E7),
                       badgeText: null,
                     ),
                   ]) ...[

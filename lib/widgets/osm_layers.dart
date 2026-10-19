@@ -112,18 +112,20 @@ Widget userLocationDot({bool dark = false}) {
     child: Stack(
       alignment: Alignment.center,
       children: [
-        if (dark)
-          Container(
-            width: 72,
-            height: 72,
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(
-                colors: [Color(0x2EFFFFFF), Color(0x00FFFFFF)],
-                stops: [0.35, 1.0],
-              ),
+        Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(
+              colors: [
+                dark ? const Color(0x2EFFFFFF) : const Color(0x1818181B),
+                dark ? const Color(0x00FFFFFF) : const Color(0x0018181B),
+              ],
+              stops: const [0.35, 1.0],
             ),
           ),
+        ),
         dot,
       ],
     ),

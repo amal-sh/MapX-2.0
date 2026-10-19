@@ -32,6 +32,16 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   }
 
   Future<void> _locate({required bool moveMap}) async {
+    final cached = await LocationService.instance.getLastKnownOrCachedLocation();
+    if (cached != null && mounted && _gps == null) {
+      final here = LatLng(cached.latitude, cached.longitude);
+      setState(() {
+        _gps = here;
+        if (moveMap && _center == null) _center = here;
+      });
+      if (moveMap && _mapReady) _map.move(here, 18);
+    }
+
     final loc = await LocationService.instance.getCurrentLocation();
     if (loc == null || !mounted) return;
     final here = LatLng(loc.latitude, loc.longitude);
@@ -81,7 +91,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
                   children: [
                     osmTileLayer(),
                     if (_gps != null)
-                      MarkerLayer(markers: [Marker(point: _gps!, width: 72, height: 72, child: userLocationDot())]),
+                      MarkerLayer(markers: [Marker(point: _gps!, width: 72, height: 72, alignment: Alignment.center, child: userLocationDot())]),
                     osmAttribution(),
                   ],
                 ),

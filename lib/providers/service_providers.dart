@@ -35,7 +35,7 @@ final basemapPreferenceProvider =
 });
 
 class BasemapPreferenceNotifier extends StateNotifier<String> {
-  BasemapPreferenceNotifier() : super('dark') {
+  BasemapPreferenceNotifier() : super('standard') {
     load();
   }
 

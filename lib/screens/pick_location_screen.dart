@@ -38,13 +38,21 @@ class _PickLocationScreenState extends State<PickLocationScreen> {
     if (_locatingMe) return;
     setState(() => _locatingMe = true);
     try {
+      final cached = await LocationService.instance.getLastKnownOrCachedLocation();
+      if (cached != null && mounted && _me == null) {
+        final p = LatLng(cached.latitude, cached.longitude);
+        setState(() => _me = p);
+        if (move) _map.move(p, 17);
+      }
+
       final loc = await LocationService.instance.getCurrentLocation();
       if (!mounted || loc == null) return;
+      final p = LatLng(loc.latitude, loc.longitude);
       setState(() {
-        _me = LatLng(loc.latitude, loc.longitude);
+        _me = p;
         _locatingMe = false;
       });
-      if (move) _map.move(_me!, 17);
+      if (move) _map.move(p, 17);
     } catch (_) {
       if (mounted) setState(() => _locatingMe = false);
     }
@@ -144,6 +152,7 @@ class _PickLocationScreenState extends State<PickLocationScreen> {
                                 point: _me!,
                                 width: 72,
                                 height: 72,
+                                alignment: Alignment.center,
                                 child: userLocationDot(dark: false),
                               ),
                             Marker(

@@ -114,7 +114,18 @@ class LocationService {
     }
   }
 
+  /// Opens the system location settings page.
+  Future<bool> openLocationSettings() async {
+    try {
+      return await Geolocator.openLocationSettings();
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Requests permissions and retrieves the device's current GPS position.
+  /// Attempts high accuracy first, falls back to balanced/medium accuracy
+  /// if high-accuracy GPS times out, and falls back to last known position.
   Future<BuildingLocation?> getCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -137,12 +148,23 @@ class LocationService {
         return null;
       }
 
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 10),
-        ),
-      );
+      Position position;
+      try {
+        position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 8),
+          ),
+        );
+      } catch (highAccuracyError) {
+        debugPrint('High accuracy location timed out/failed ($highAccuracyError), falling back to medium accuracy...');
+        position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.medium,
+            timeLimit: Duration(seconds: 5),
+          ),
+        );
+      }
 
       final loc = BuildingLocation(
         latitude: position.latitude,
@@ -169,7 +191,42 @@ class LocationService {
           return loc;
         }
       } catch (_) {}
-      return null;
+      return _cachedLocation;
+    }
+  }
+
+  /// Provides a stream of live location updates.
+  /// Automatically updates [_cachedLocation] and persists it.
+  /// Handles permission checks and platform errors gracefully.
+  Stream<BuildingLocation> getPositionStream({
+    LocationAccuracy accuracy = LocationAccuracy.high,
+    int distanceFilter = 2,
+  }) async* {
+    try {
+      final hasPermission = await requestPermission();
+      if (!hasPermission) return;
+
+      final locationSettings = LocationSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+      );
+
+      yield* Geolocator.getPositionStream(locationSettings: locationSettings)
+          .handleError((error) {
+        debugPrint('LocationService: stream error: $error');
+      }).map((pos) {
+        final loc = BuildingLocation(
+          latitude: pos.latitude,
+          longitude: pos.longitude,
+          accuracy: pos.accuracy,
+          timestamp: pos.timestamp,
+        );
+        _cachedLocation = loc;
+        _persistLocation(loc);
+        return loc;
+      });
+    } catch (e) {
+      debugPrint('LocationService: getPositionStream init error: $e');
     }
   }
 }

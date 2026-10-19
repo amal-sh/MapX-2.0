@@ -3,29 +3,32 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
-import '../logic/outdoor_route_planner.dart';
 import '../logic/geo_math.dart';
+import '../logic/outdoor_route_planner.dart';
 import '../models/outdoor_models.dart';
+import '../providers/service_providers.dart';
 import '../services/location_service.dart';
+import '../services/user_preferences_service.dart';
 import '../widgets/osm_layers.dart';
 
 /// The outdoor part of a trip between buildings: the street map with the
 /// walking route and a live GPS dot, like a walking-directions app. Pops
 /// true once the walker confirms they're at the next building's entrance,
 /// false if they stop navigating.
-class OutdoorNavigationScreen extends StatefulWidget {
+class OutdoorNavigationScreen extends ConsumerStatefulWidget {
   final OutdoorHop hop;
 
   const OutdoorNavigationScreen({super.key, required this.hop});
 
   @override
-  State<OutdoorNavigationScreen> createState() => _OutdoorNavigationScreenState();
+  ConsumerState<OutdoorNavigationScreen> createState() => _OutdoorNavigationScreenState();
 }
 
-class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
+class _OutdoorNavigationScreenState extends ConsumerState<OutdoorNavigationScreen> {
   // Phone GPS is typically good to 5-10 m outdoors, so "arrived" and "off
   // route" use generous margins.
   static const double _arrivalRadiusMeters = 15;
@@ -48,6 +51,7 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
   void initState() {
     super.initState();
     _startGps();
+    ref.read(basemapPreferenceProvider.notifier).load();
     try {
       _channel.invokeMethod('setKeepScreenOn', {'enabled': true});
     } catch (_) {}
@@ -63,6 +67,17 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
   }
 
   Future<void> _startGps() async {
+    // 1. Immediately display cached/last known position while GPS locks
+    final cached = await LocationService.instance.getLastKnownOrCachedLocation();
+    if (cached != null && mounted && _here == null) {
+      final here = (cached.latitude, cached.longitude);
+      setState(() {
+        _here = here;
+        _accuracy = cached.accuracy;
+      });
+      if (_following && _mapReady) _map.move(LatLng(here.$1, here.$2), _map.camera.zoom);
+    }
+
     if (!await LocationService.instance.requestPermission()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -73,7 +88,9 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
     }
     _gpsSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.best, distanceFilter: 1),
-    ).listen((p) {
+    ).handleError((err) {
+      debugPrint('OutdoorNavigationScreen GPS stream error: $err');
+    }).listen((p) {
       if (!mounted) return;
       final here = (p.latitude, p.longitude);
       setState(() {
@@ -105,6 +122,14 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final basemapPref = ref.watch(basemapPreferenceProvider);
+    final isDark = basemapPref == UserPreferencesService.basemapDark;
+    final basemapTheme = basemapPref == UserPreferencesService.basemapDark
+        ? BasemapTheme.dark
+        : (basemapPref == UserPreferencesService.basemapLight
+            ? BasemapTheme.light
+            : BasemapTheme.standard);
+
     final hop = widget.hop;
     final here = _here;
     final progress = here == null ? null : progressAlongRoute(_route, here);
@@ -137,21 +162,23 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                 initialCenter: _ll(_route.first),
                 initialZoom: 18,
                 maxZoom: 20,
-                backgroundColor: const Color(0xFF080E18),
+                backgroundColor: isDark
+                    ? const Color(0xFF080E18)
+                    : const Color(0xFFF4F4F5),
                 onMapReady: () => _mapReady = true,
                 onPositionChanged: (_, hasGesture) {
                   if (hasGesture && _following) setState(() => _following = false);
                 },
               ),
               children: [
-                customDarkTileLayer(),
+                basemapTileLayer(basemapTheme),
                 PolylineLayer(
                   polylines: [
                     if (walked.length > 1)
                       Polyline(
                         points: walked,
                         strokeWidth: 8,
-                        color: const Color(0xFF080E18),
+                        color: isDark ? const Color(0xFF080E18) : Colors.white,
                       ),
                     if (walked.length > 1)
                       Polyline(
@@ -162,7 +189,7 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                     Polyline(
                       points: ahead,
                       strokeWidth: 9,
-                      color: const Color(0xFF080E18),
+                      color: isDark ? const Color(0xFF080E18) : Colors.white,
                     ),
                     Polyline(
                       points: ahead,
@@ -189,15 +216,26 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                       width: 40,
                       height: 40,
                       alignment: Alignment.topCenter,
-                      child: const Icon(Icons.location_on, size: 40, color: Colors.white),
+                      child: Icon(
+                        Icons.location_on,
+                        size: 40,
+                        color: isDark ? Colors.white : const Color(0xFF18181B),
+                        shadows: [
+                          Shadow(
+                            color: isDark ? Colors.black87 : Colors.white70,
+                            blurRadius: 4,
+                          ),
+                        ],
+                      ),
                     ),
                     if (here != null)
                       Marker(
                         point: _ll(here),
                         width: _course == null ? 72 : 36,
                         height: _course == null ? 72 : 36,
+                        alignment: Alignment.center,
                         child: _course == null
-                            ? userLocationDot(dark: true)
+                            ? userLocationDot(dark: isDark)
                             : Transform.rotate(
                                 angle: _course! * pi / 180,
                                 child: Container(
@@ -215,7 +253,7 @@ class _OutdoorNavigationScreenState extends State<OutdoorNavigationScreen> {
                       ),
                   ],
                 ),
-                osmAttribution(),
+                basemapAttribution(basemapTheme),
               ],
             ),
             Positioned(

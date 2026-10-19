@@ -93,10 +93,10 @@ class UserPreferencesService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final basemap = prefs.getString(basemapKey);
-      return _basemaps.contains(basemap) ? basemap! : basemapDark;
+      return _basemaps.contains(basemap) ? basemap! : basemapStandard;
     } catch (e) {
       debugPrint('UserPreferencesService.loadBasemapTheme error: $e');
-      return basemapDark;
+      return basemapStandard;
     }
   }
 
@@ -104,7 +104,7 @@ class UserPreferencesService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(basemapKey,
-          _basemaps.contains(basemap) ? basemap : basemapDark);
+          _basemaps.contains(basemap) ? basemap : basemapStandard);
     } catch (e) {
       debugPrint('UserPreferencesService.saveBasemapTheme error: $e');
     }

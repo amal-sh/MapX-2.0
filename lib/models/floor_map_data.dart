@@ -40,7 +40,7 @@ class FloorMapData {
       key,
       raw,
       floor,
-      raw['name'] as String?,
+      (raw['name'] ?? raw['building']) as String?,
       list('segments').map(PathSegment.fromJson).toList(),
       waypoints,
       list('walls').map(WallSegment.fromJson).toList(),

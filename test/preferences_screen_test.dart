@@ -57,7 +57,13 @@ void main() {
     await tester.pumpWidget(buildSubject(container: container));
     await tester.pumpAndSettle();
 
-    // Initial state is dark
+    // Initial state is standard
+    expect(container.read(basemapPreferenceProvider), 'standard');
+
+    // Tap Dark Blue
+    await tester.tap(find.text('Dark Blue'));
+    await tester.pumpAndSettle();
+
     expect(container.read(basemapPreferenceProvider), 'dark');
 
     // Tap Monochrome Light
@@ -65,11 +71,5 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(container.read(basemapPreferenceProvider), 'light');
-
-    // Tap Standard OpenStreetMap
-    await tester.tap(find.text('Standard OpenStreetMap'));
-    await tester.pumpAndSettle();
-
-    expect(container.read(basemapPreferenceProvider), 'standard');
   });
 }
